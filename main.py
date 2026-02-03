@@ -160,74 +160,82 @@ with main_tab1:
 
 
 # ---------------------------------------------------------
-    # [2. 주간 식단표 - 2주일치 확대 버전]
+# ---------------------------------------------------------
+    # [2. 주간 식단표 - 직접 편집 및 복사/붙여넣기 강화 버전]
     # ---------------------------------------------------------
     st.divider()
     st.header("📅 2주 식단 플래너 (이번 주 & 다음 주)")
     
-    # 기준일로부터 이번 주 월요일 계산
     curr_week_start = target_date - timedelta(days=target_date.weekday())
-    
-    # 요일 이름 정의
     days_kr = ["월", "화", "수", "목", "금", "토", "일"]
 
-    # 2주 반복 (week_idx 0: 이번 주, 1: 다음 주)
     for week_idx in range(2):
         week_label = "🌟 이번 주" if week_idx == 0 else "📅 다음 주"
         st.subheader(week_label)
         
-        # 해당 주차의 시작일과 종료일 계산
         start_dt = curr_week_start + timedelta(weeks=week_idx)
         end_dt = start_dt + timedelta(days=6)
-        
-        # 해당 주차 데이터 한 번에 가져오기
         week_meals = fetch_meals(start_dt.isoformat(), end_dt.isoformat())
         
+        # 모바일 가로 배열 유지를 위한 컬럼
         w_cols = st.columns(7)
         for i, col in enumerate(w_cols):
             current_dt = start_dt + timedelta(days=i)
             d_str = current_dt.isoformat()
             
             with col:
-                # 날짜 헤더 (오늘 날짜는 강조)
                 is_today = current_dt == date.today()
                 date_color = "#ff4b4b" if is_today else "#31333F"
-                st.markdown(f"<div style='text-align:center; color:{date_color}; font-weight:bold;'>{days_kr[i]} ({current_dt.strftime('%m/%d')})</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align:center; color:{date_color}; font-weight:bold; font-size:12px;'>{days_kr[i]}<br>{current_dt.strftime('%m/%d')}</div>", unsafe_allow_html=True)
                 
-                # 아침, 점심, 저녁 루프
                 for m_type in ["아침", "점심", "저녁"]:
                     m_row = week_meals[(week_meals['date'] == d_str) & (week_meals['meal'] == m_type)]
                     
+                    # 데이터가 있으면 가져오고, 없으면 기본값 설정
                     if not m_row.empty:
                         tr = m_row.iloc[0]
-                        wt = tr.get('toppings') or []
-                        wn = tr.get('new_food') or []
-                        ws = tr.get('snack') or "X"
-                        
-                        # 주간 요약 카드 디자인
-                        st.markdown(f"""
-                            <div style='border:1px solid #ddd; padding:6px; border-radius:5px; margin-bottom:5px; 
-                                        background-color:{"#e8f5e9" if tr["is_eaten"] else "white"}; font-size:10px; line-height:1.2;'>
-                                <b style='color:#555;'>{m_type}</b><br>
-                                🍚 {tr["base"]}<br>
-                                🥗 {", ".join(wt) if wt else "X"}<br>
-                                🍪 {str(ws)[:3]}
-                                {f'<br><span style="color:red; font-weight:bold;">🆕 {", ".join(wn)}</span>' if wn else ''}
-                            </div>
-                        """, unsafe_allow_html=True)
+                        c_base, c_tops, c_snack, c_new, c_amt, c_eaten = tr['base'], tr['toppings'] or [], tr['snack'], tr['new_food'] or [], int(tr['amount']), bool(tr['is_eaten'])
                     else:
-                        # 식단이 없는 경우 빈 칸 표시
-                        st.markdown("""
-                            <div style='border:1px dashed #eee; padding:6px; border-radius:5px; margin-bottom:5px; 
-                                        text-align:center; color:#ccc; font-size:10px;'>
-                                미등록
-                            </div>
-                        """, unsafe_allow_html=True)
-        
-        if week_idx == 0:
-            st.write("") # 주차 사이 간격
+                        c_base, c_tops, c_snack, c_new, c_amt, c_eaten = "없음", [], "없음", [], 0, False
 
+                    # 끼니 카드 디자인
+                    card_bg = "#e8f5e9" if c_eaten else ("white" if not m_row.empty else "#fdfdfd")
+                    border_style = "solid #ddd" if not m_row.empty else "dashed #eee"
+                    
+                    st.markdown(f"""
+                        <div style='border:1px {border_style}; padding:4px; border-radius:5px; margin-bottom:2px; 
+                                    background-color:{card_bg}; font-size:10px; line-height:1.1; min-height:50px;'>
+                            <b style='color:#555;'>{m_type}</b><br>
+                            {c_base if not m_row.empty else "미등록"}
+                        </div>
+                    """, unsafe_allow_html=True)
 
+                    # [핵심] 주간 식단표에서 바로 편집하는 팝오버
+                    with st.popover("📝", use_container_width=True):
+                        st.write(f"**{current_dt.strftime('%m/%d')} {m_type} 편집**")
+                        
+                        # 복사 / 붙여넣기
+                        cp1, cp2 = st.columns(2)
+                        with cp1:
+                            if st.button("📋 복사", key=f"wk_cp_{d_str}_{m_type}"):
+                                st.session_state.clipboard = {"base": c_base, "toppings": c_tops, "snack": c_snack, "new_food": c_new, "amount": c_amt}
+                                st.toast(f"{current_dt.strftime('%m/%d')} {m_type} 복사됨")
+                        with cp2:
+                            if st.button("📥 붙여넣기", key=f"wk_ps_{d_str}_{m_type}", disabled=st.session_state.clipboard is None):
+                                cb = st.session_state.clipboard
+                                save_meal(d_str, m_type, cb["base"], cb["toppings"], cb["snack"], cb["new_food"], cb["amount"], False)
+
+                        st.divider()
+                        
+                        # 입력 폼
+                        u_base = st.selectbox("🍚 베이스", food_options["베이스"], index=food_options["베이스"].index(c_base) if c_base in food_options["베이스"] else 0, key=f"v_b_{d_str}_{m_type}")
+                        u_tops = st.multiselect("🥗 토핑", food_options["토핑"], default=[t for t in c_tops if t in food_options["토핑"]], key=f"v_t_{d_str}_{m_type}")
+                        u_snack = st.selectbox("🍪 간식", food_options["간식"], index=food_options["간식"].index(c_snack) if c_snack in food_options["간식"] else 0, key=f"v_s_{d_str}_{m_type}")
+                        u_amt = st.number_input("📏 양", min_value=0, value=c_amt, key=f"v_a_{d_str}_{m_type}")
+                        u_eaten = st.checkbox("✅ 완료", value=c_eaten, key=f"v_e_{d_str}_{m_type}")
+                        
+                        if st.button("저장", key=f"v_save_{d_str}_{m_type}", type="primary", use_container_width=True):
+                            save_meal(d_str, m_type, u_base, u_tops, u_snack, c_new, u_amt, u_eaten)
 # ---------------------------------------------------------
 # ---------------------------------------------------------
     # [3. 재료 관리 - UI 전면 개편 및 재고임박 리스트 추가]
