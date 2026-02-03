@@ -88,6 +88,8 @@ with main_tab1:
     t_meals = fetch_meals(t_str, t_str)
 
     st.subheader(f"📍 {target_date.strftime('%Y-%m-%d')} 식단")
+    
+    # 모바일에서 한 줄씩 보이지 않게 하려면 columns 유지
     t_cols = st.columns(3)
     for idx, m_type in enumerate(["아침", "점심", "저녁"]):
         with t_cols[idx]:
@@ -103,28 +105,59 @@ with main_tab1:
             else:
                 c_base, c_tops, c_snack, c_new, c_amt, c_eaten = "없음", [], "없음", [], 0, False
             
+            # 식단 카드 디자인
             b_color = "#e8f5e9" if c_eaten else "#f0f2f6"
             st.markdown(f"""
-                <div style="background-color:{b_color}; padding:12px; border-radius:10px; border:2px solid #ddd; min-height:160px;">
-                    <strong style="font-size:16px;">☀️ {m_type}</strong><br>
-                    🍚 {c_base} | 🍪 {c_snack}<br>
-                    🥗 {', '.join(c_tops) if c_tops else '토핑없음'}<br>
-                    {f'🆕 <span style="background-color: yellow; color: red; font-weight: bold; padding: 2px 5px; border-radius: 3px;">NEW: {", ".join(c_new)}</span>' if c_new else ''}<br>
+                <div style="background-color:{b_color}; padding:10px; border-radius:10px; border:2px solid #ddd; min-height:150px;">
+                    <strong style="font-size:14px;">☀️ {m_type}</strong><br>
+                    <span style="font-size:12px;">🍚 {c_base} | 🍪 {c_snack}</span><br>
+                    <span style="font-size:12px;">🥗 {', '.join(c_tops) if c_tops else '토핑없음'}</span><br>
+                    {f'🆕 <span style="background-color: yellow; color: red; font-size:11px; font-weight: bold; padding: 1px 3px; border-radius: 3px;">NEW: {", ".join(c_new)}</span>' if c_new else ''}<br>
                     <small>📏 {c_amt}ml/g {'✅' if c_eaten else ''}</small>
                 </div>
             """, unsafe_allow_html=True)
 
+            # 편집 및 복사/붙여넣기 팝오버
             with st.popover(f"📝 {m_type} 편집", use_container_width=True):
-                u_base = st.selectbox("🍚 베이스", food_options["베이스"], index=food_options["베이스"].index(c_base) if c_base in food_options["베이스"] else 0, key=f"t_b_{m_type}")
-                u_tops = st.multiselect("🥗 토핑", food_options["토핑"], default=[t for t in c_tops if t in food_options["토핑"]], key=f"t_t_{m_type}")
-                u_snack = st.selectbox("🍪 간식", food_options["간식"], index=food_options["간식"].index(c_snack) if c_snack in food_options["간식"] else 0, key=f"t_s_{m_type}")
-                u_new = st.multiselect("🆕 처음 먹는 재료", food_options["베이스"] + food_options["토핑"], default=c_new, key=f"t_n_{m_type}")
+                # --- 식단 복사/붙여넣기 버튼 ---
+                col_copy, col_paste = st.columns(2)
+                with col_copy:
+                    if st.button("📋 복사", key=f"cp_{t_str}_{m_type}", use_container_width=True):
+                        st.session_state.clipboard = {
+                            "base": c_base, "toppings": c_tops, "snack": c_snack,
+                            "new_food": c_new, "amount": c_amt
+                        }
+                        st.toast(f"{m_type} 식단 복사 완료!")
+                
+                with col_paste:
+                    # 복사된 데이터가 있을 때만 버튼 활성화
+                    is_empty = st.session_state.clipboard is None
+                    if st.button("📥 붙여넣기", key=f"ps_{t_str}_{m_type}", use_container_width=True, disabled=is_empty):
+                        cb = st.session_state.clipboard
+                        save_meal(t_str, m_type, cb["base"], cb["toppings"], cb["snack"], cb["new_food"], cb["amount"], False)
+
+                st.divider()
+
+                # --- 편집 폼 ---
+                u_base = st.selectbox("🍚 베이스", food_options["베이스"], 
+                                      index=food_options["베이스"].index(c_base) if c_base in food_options["베이스"] else 0, 
+                                      key=f"t_b_{m_type}")
+                u_tops = st.multiselect("🥗 토핑", food_options["토핑"], 
+                                        default=[t for t in c_tops if t in food_options["토핑"]], 
+                                        key=f"t_t_{m_type}")
+                u_snack = st.selectbox("🍪 간식", food_options["간식"], 
+                                       index=food_options["간식"].index(c_snack) if c_snack in food_options["간식"] else 0, 
+                                       key=f"t_s_{m_type}")
+                u_new = st.multiselect("🆕 처음 재료", food_options["베이스"] + food_options["토핑"], 
+                                       default=c_new, key=f"t_n_{m_type}")
                 u_amt = st.number_input("📏 양", min_value=0, value=c_amt, key=f"t_a_{m_type}")
                 u_eaten = st.checkbox("✅ 완료", value=c_eaten, key=f"t_e_{m_type}")
-                if st.button("저장", key=f"t_btn_{m_type}", type="primary"):
+                
+                if st.button("저장", key=f"t_btn_{m_type}", type="primary", use_container_width=True):
                     save_meal(t_str, m_type, u_base, u_tops, u_snack, u_new, u_amt, u_eaten)
 
     st.divider()
+
 
 # ---------------------------------------------------------
     # [2. 주간 식단표 - 2주일치 확대 버전]
