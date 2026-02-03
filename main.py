@@ -145,9 +145,13 @@ with main_tab1:
                 u_tops = st.multiselect("🥗 토핑", food_options["토핑"], 
                                         default=[t for t in c_tops if t in food_options["토핑"]], 
                                         key=f"t_t_{m_type}")
-                u_snack = st.selectbox("🍪 간식", food_options["간식"], 
-                                       index=food_options["간식"].index(c_snack) if c_snack in food_options["간식"] else 0, 
-                                       key=f"t_s_{m_type}")
+                u_snack = st.multiselect(
+    "🍪 간식 (최대 3개)", 
+    food_options["간식"], 
+    default=[s for s in (c_snack if isinstance(c_snack, list) else [c_snack]) if s in food_options["간식"]],
+    max_selections=3,
+    key=f"t_s_{m_type}"
+)
                 u_new = st.multiselect("🆕 처음 재료", food_options["베이스"] + food_options["토핑"], 
                                        default=c_new, key=f"t_n_{m_type}")
                 u_amt = st.number_input("📏 양", min_value=0, value=c_amt, key=f"t_a_{m_type}")
@@ -158,29 +162,68 @@ with main_tab1:
 
     st.divider()
 
+# ---------------------------------------------------------
+    # [1-2. 식단 일괄 복사 도구] - 오늘의 식단 바로 아래 추가
+    # ---------------------------------------------------------
+    with st.expander("🚀 **식단 일괄 복사 도구 (여러 날짜에 한 번에 넣기)**", expanded=False):
+        st.info("특정 날짜의 식단을 복사하여 선택한 여러 날짜들에 동일하게 적용합니다.")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            source_date = st.date_input("📋 원본 식단 날짜", date.today(), key="src_date")
+        with c2:
+            source_meal = st.selectbox("🍴 복사할 끼니", ["아침", "점심", "저녁"], key="src_meal")
 
+        # 원본 데이터 가져오기
+        src_str = source_date.isoformat()
+        src_data = fetch_meals(src_str, src_str)
+        target_row = src_data[src_data['meal'] == source_meal]
+
+        if not target_row.empty:
+            tr = target_row.iloc[0]
+            st.warning(f"선택된 식단: **{tr['base']}** (+{', '.join(tr['toppings']) if tr['toppings'] else '토핑없음'})")
+            
+            # 대상 날짜 선택 (복수 선택 가능)
+            target_dates = st.multiselect(
+                "📅 복사해 넣을 날짜들을 선택하세요 (여러 날 선택 가능)",
+                [(date.today() + timedelta(days=x)) for x in range(-7, 21)], # 과거 1주 ~ 미래 3주
+                format_func=lambda x: x.strftime("%m/%d (%a)"),
+                key="target_dates_multi"
+            )
+
+            if st.button("✨ 선택한 날짜들에 일괄 복사하기", type="primary", use_container_width=True):
+                if not target_dates:
+                    st.error("복사할 대상 날짜를 선택해주세요.")
+                else:
+                    success_count = 0
+                    for t_date in target_dates:
+                        t_str = t_date.isoformat()
+                        # 원본 데이터를 대상 날짜의 동일한 끼니에 저장
+                        save_meal(
+                            t_str, 
+                            source_meal, 
+                            tr['base'], 
+                            tr['toppings'], 
+                            tr['snack'], 
+                            tr['new_food'], 
+                            tr['amount'], 
+                            False # 복사 시 완료 여부는 항상 미완료로 설정
+                        )
+                        success_count += 1
+                    st.success(f"✅ {success_count}개의 날짜에 {source_meal} 식단 복사 완료!")
+                    st.rerun()
+        else:
+            st.error("해당 날짜와 끼니에 등록된 식단이 없습니다. 먼저 식단을 등록해주세요.")
+            
 # ---------------------------------------------------------
 # ---------------------------------------------------------
-    # [2. 주간 식단표 - 정보 가시성 복구 및 편집 버튼 축소]
+    # [2. 주간 식단표 - 간식 다중 선택(최대 3개) 버전]
     # ---------------------------------------------------------
     st.divider()
     st.header("📅 2주 식단 플래너")
     
     curr_week_start = target_date - timedelta(days=target_date.weekday())
     days_kr = ["월", "화", "수", "목", "금", "토", "일"]
-
-    # 팝오버/버튼 크기 강제 축소 CSS
-    st.markdown("""
-        <style>
-        .stPopover > button {
-            padding: 0px !important;
-            height: 25px !important;
-            min-height: 25px !important;
-            font-size: 10px !important;
-            line-height: 1 !important;
-        }
-        </style>
-    """, unsafe_allow_html=True)
 
     for week_idx in range(2):
         st.subheader("🌟 이번 주" if week_idx == 0 else "📅 다음 주")
@@ -189,69 +232,85 @@ with main_tab1:
         end_dt = start_dt + timedelta(days=6)
         week_meals = fetch_meals(start_dt.isoformat(), end_dt.isoformat())
         
-        w_cols = st.columns(7)
-        for i, col in enumerate(w_cols):
+        for i in range(7):
             current_dt = start_dt + timedelta(days=i)
             d_str = current_dt.isoformat()
+            is_today = current_dt == date.today()
+            date_label = f"{days_kr[i]} ({current_dt.strftime('%m/%d')})"
             
-            with col:
-                is_today = current_dt == date.today()
-                date_color = "#ff4b4b" if is_today else "#31333F"
-                st.markdown(f"<div style='text-align:center; color:{date_color}; font-weight:bold; font-size:11px;'>{days_kr[i]}<br>{current_dt.strftime('%m/%d')}</div>", unsafe_allow_html=True)
-                
-                for m_type in ["아침", "점심", "저녁"]:
+            if is_today:
+                st.markdown(f"<p style='color:#ff4b4b; font-weight:bold; margin-bottom:5px; border-left:3px solid #ff4b4b; padding-left:10px;'>📍 {date_label}</p>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<p style='font-weight:bold; margin-bottom:5px; color:#31333F;'>{date_label}</p>", unsafe_allow_html=True)
+
+            m_cols = st.columns(3)
+            for idx, m_type in enumerate(["아침", "점심", "저녁"]):
+                with m_cols[idx]:
                     m_row = week_meals[(week_meals['date'] == d_str) & (week_meals['meal'] == m_type)]
                     
                     if not m_row.empty:
                         tr = m_row.iloc[0]
-                        c_base, c_tops, c_snack, c_new, c_amt, c_eaten = tr['base'], tr['toppings'] or [], tr['snack'], tr['new_food'] or [], int(tr['amount']), bool(tr['is_eaten'])
+                        c_base = tr['base']
+                        c_tops = tr['toppings'] or []
+                        # 간식 데이터가 문자열일 경우 리스트로 변환하여 처리
+                        raw_snack = tr['snack']
+                        c_snack = raw_snack if isinstance(raw_snack, list) else ([raw_snack] if raw_snack and raw_snack != "없음" else [])
+                        c_new = tr['new_food'] or []
+                        c_amt = int(tr['amount'])
+                        c_eaten = bool(tr['is_eaten'])
                         
-                        # 카드에 표시할 내용 (베이스 + 토핑 요약)
-                        tops_str = f"+{', '.join(c_tops)}" if c_tops else ""
-                        card_content = f"<b>{c_base}</b><br><span style='color:#666;'>{tops_str}</span>"
-                        card_bg = "#e8f5e9" if c_eaten else "white"
-                        border_style = "1px solid #ddd"
+                        state_color = "#e8f5e9" if c_eaten else "#fff3e0"
+                        border_color = "#c8e6c9" if c_eaten else "#ffe0b2"
+                        display_name = f"{'✅' if c_eaten else '📝'} {c_base}"
+                        tops_text = f"+{', '.join(c_tops)}" if c_tops else "토핑없음"
+                        snack_text = f"🍪 {', '.join(c_snack)}" if c_snack else ""
                     else:
-                        c_base, c_tops, c_snack, c_new, c_amt, c_eaten = "없음", [], "없음", [], 0, False
-                        card_content = "<span style='color:#ccc;'>미등록</span>"
-                        card_bg = "#fdfdfd"
-                        border_style = "1px dashed #eee"
+                        c_base, c_tops, c_snack, c_new, c_amt, c_eaten = "없음", [], [], [], 0, False
+                        state_color, border_color, display_name, tops_text, snack_text = "#f9f9f9", "#eeeeee", "미등록", "", ""
 
-                    # 끼니 정보 출력
-                    st.markdown(f"""
-                        <div style='border:{border_style}; padding:4px; border-radius:4px; margin-bottom:2px; 
-                                    background-color:{card_bg}; font-size:9px; line-height:1.2; min-height:45px;'>
-                            <span style='color:#999;'>{m_type}</span><br>
-                            {card_content}
-                        </div>
-                    """, unsafe_allow_html=True)
+                    unique_key = f"wk_{d_str}_{m_type}"
 
-                    # [축소된 편집 버튼]
-                    with st.popover("📝 Edit", use_container_width=True):
-                        st.caption(f"{current_dt.strftime('%m/%d')} {m_type}")
+                    with st.popover(f"{m_type}\n{display_name}", use_container_width=True):
+                        st.write(f"### {current_dt.strftime('%m/%d')} {m_type}")
                         
-                        cp1, cp2 = st.columns(2)
-                        with cp1:
-                            if st.button("📋 복사", key=f"wk_cp_{d_str}_{m_type}"):
+                        # 복사/붙여넣기
+                        cp_col1, cp_col2 = st.columns(2)
+                        with cp_col1:
+                            if st.button("📋 복사", key=f"btn_cp_{unique_key}"):
                                 st.session_state.clipboard = {"base": c_base, "toppings": c_tops, "snack": c_snack, "new_food": c_new, "amount": c_amt}
                                 st.toast("복사됨")
-                        with cp2:
-                            if st.button("📥 붙여넣기", key=f"wk_ps_{d_str}_{m_type}", disabled=st.session_state.clipboard is None):
+                        with cp_col2:
+                            if st.button("📥 붙여넣기", key=f"btn_ps_{unique_key}", disabled=st.session_state.clipboard is None):
                                 cb = st.session_state.clipboard
                                 save_meal(d_str, m_type, cb["base"], cb["toppings"], cb["snack"], cb["new_food"], cb["amount"], False)
-
-                        st.divider()
-                        u_base = st.selectbox("🍚 베이스", food_options["베이스"], index=food_options["베이스"].index(c_base) if c_base in food_options["베이스"] else 0, key=f"v_b_{d_str}_{m_type}")
-                        u_tops = st.multiselect("🥗 토핑", food_options["toppings"] if "toppings" in food_options else food_options["토핑"], default=[t for t in c_tops if t in (food_options["toppings"] if "toppings" in food_options else food_options["토핑"])], key=f"v_t_{d_str}_{m_type}")
-                        u_snack = st.selectbox("🍪 간식", food_options["간식"], index=food_options["간식"].index(c_snack) if c_snack in food_options["간식"] else 0, key=f"v_s_{d_str}_{m_type}")
-                        u_amt = st.number_input("📏 양", min_value=0, value=c_amt, key=f"v_a_{d_str}_{m_type}")
-                        u_eaten = st.checkbox("✅ 완료", value=c_eaten, key=f"v_e_{d_str}_{m_type}")
                         
-                        if st.button("저장", key=f"v_save_{d_str}_{m_type}", type="primary", use_container_width=True):
+                        st.divider()
+                        u_base = st.selectbox("🍚 베이스", food_options["베이스"], index=food_options["베이스"].index(c_base) if c_base in food_options["베이스"] else 0, key=f"sel_b_{unique_key}")
+                        u_tops = st.multiselect("🥗 토핑", food_options["토핑"], default=[t for t in c_tops if t in food_options["토핑"]], key=f"sel_t_{unique_key}")
+                        
+                        # --- 간식 다중 선택 적용 (최대 3개) ---
+                        u_snack = st.multiselect(
+                            "🍪 간식 (최대 3개)", 
+                            food_options["간식"], 
+                            default=[s for s in c_snack if s in food_options["간식"]],
+                            max_selections=3,
+                            key=f"sel_s_{unique_key}"
+                        )
+                        
+                        u_amt = st.number_input("📏 양", min_value=0, value=c_amt, key=f"num_a_{unique_key}")
+                        u_eaten = st.checkbox("✅ 완료", value=c_eaten, key=f"chk_e_{unique_key}")
+                        
+                        if st.button("저장", key=f"btn_sv_{unique_key}", type="primary", use_container_width=True):
                             save_meal(d_str, m_type, u_base, u_tops, u_snack, c_new, u_amt, u_eaten)
 
+                    # 카드 하단 정보 표시 (토핑 및 간식)
+                    info_html = f"<div style='margin-top:-15px; margin-bottom:10px; padding:2px 8px; font-size:10px; color:#888; border:1px solid {border_color}; border-top:none; border-radius:0 0 5px 5px; background-color:{state_color};'>"
+                    if tops_text: info_html += f"<span>{tops_text}</span>"
+                    if snack_text: info_html += f"<br><span style='color:#d4a017;'>{snack_text}</span>"
+                    info_html += "</div>"
+                    if tops_text or snack_text:
+                        st.markdown(info_html, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
 # ---------------------------------------------------------
     # [3. 재료 관리 - 숫자 직접 입력(속도 최적화) 버전]
     # ---------------------------------------------------------
