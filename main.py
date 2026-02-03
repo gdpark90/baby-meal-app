@@ -197,12 +197,12 @@ with main_tab1:
 
 # ---------------------------------------------------------
 # ---------------------------------------------------------
-    # [3. 재료 관리 - 모바일 가로 고정 및 UI 최종본]
+    # [3. 재료 관리 - 모바일 전용 가로 고정 레이아웃]
     # ---------------------------------------------------------
     st.divider()
     st.header("📦 재료 관리 & 예상 소진일")
 
-    # [A] 데이터 로드 및 소진일 계산 함수 (에러 방지용 상단 배치)
+    # [A] 소진일 계산 함수 및 데이터 로드
     future_meals = fetch_meals(date.today().isoformat(), (date.today() + timedelta(days=30)).isoformat())
     
     def get_exhaustion_date(food_name):
@@ -212,25 +212,20 @@ with main_tab1:
             toppings = row.get('toppings') or []
             if row['base'] == food_name or food_name in toppings or row.get('snack') == food_name:
                 relevant_dates.append(row['date'])
-        
-        if not relevant_dates: 
-            return "계획 없음"
-            
+        if not relevant_dates: return "계획 없음"
         last_dt = datetime.strptime(max(relevant_dates), '%Y-%m-%d')
-        day_kr = ["월", "화", "수", "목", "금", "토", "일"][last_dt.weekday()]
-        return last_dt.strftime(f'%m/%d({day_kr})')
+        return last_dt.strftime('%m/%d')
 
     # [B] 재고임박 리스트 (5개 이하)
     low_stock_items = inv_df[inv_df['quantity'] <= 5]
     if not low_stock_items.empty:
         st.markdown(f"""
-            <div style="background-color: #fff1f0; border: 1px solid #ffa39e; border-radius: 10px; padding: 12px; margin-bottom: 20px;">
-                <h4 style="margin: 0 0 8px 0; color: #cf1322; font-size: 14px;">⚠️ 재고임박 리스트</h4>
-                {''.join([f"<p style='margin:2px 0; font-size:12px;'>• {row['category']}: <b>{row['food']}</b> ({row['quantity']}개 남음)</p>" for _, row in low_stock_items.iterrows()])}
+            <div style="background-color: #fff1f0; border: 1px solid #ffa39e; border-radius: 8px; padding: 10px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 5px 0; color: #cf1322; font-size: 14px;">⚠️ 재고임박</h4>
+                {''.join([f"<span style='font-size:12px; margin-right:8px;'>• {row['food']}({row['quantity']})</span>" for _, row in low_stock_items.iterrows()])}
             </div>
         """, unsafe_allow_html=True)
 
-    # [C] 새로운 재료 추가 폼
     with st.expander("🆕 새로운 재료 추가하기"):
         with st.form("new_food_form", clear_on_submit=True):
             f_name = st.text_input("재료 이름")
@@ -243,33 +238,36 @@ with main_tab1:
                         supabase.table("inventory").insert({"food": f_name, "category": f_cat, "quantity": f_qty}).execute()
                         st.rerun()
 
-    # [D] 모바일 가로 한 줄 강제 고정 CSS
+    # [C] 모바일 가로 강제 고정 스타일
     st.markdown("""
         <style>
-        /* 모바일에서도 컬럼이 아래로 떨어지지 않게 강제 row 유지 */
+        /* 모든 컬럼의 줄바꿈 방지 및 가로 정렬 */
         div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: nowrap !important;
             align-items: center !important;
-            gap: 5px !important;
+            gap: 2px !important;
         }
         div[data-testid="column"] {
             min-width: 0px !important;
             flex: 1 1 auto !important;
         }
-        /* 버튼 높이와 정렬 최적화 */
+        /* 버튼 크기 최적화 */
         .stButton > button {
-            height: 42px !important;
+            width: 100% !important;
+            height: 40px !important;
             padding: 0px !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
+            font-size: 16px !important;
+            font-weight: bold !important;
         }
+        /* 재료명/소진일 폰트 크기 조절 */
+        .small-text { font-size: 10px; line-height: 1; color: #666; }
+        .name-text { font-size: 12px; font-weight: bold; line-height: 1.2; }
         </style>
     """, unsafe_allow_html=True)
 
-    # [E] 메인 재고 리스트 UI
+    # [D] 재료 리스트 출력
     inv_tabs = st.tabs(["베이스", "토핑", "간식"])
     for idx, cat in enumerate(["베이스", "토핑", "간식"]):
         with inv_tabs[idx]:
@@ -277,44 +275,43 @@ with main_tab1:
             for _, row in items.iterrows():
                 ex_date = get_exhaustion_date(row['food'])
                 
-                # 가로 배치 (비율: 이름/편집 2.8 | - 0.7 | 숫자 1 | + 0.7 | 소진일 1.8)
-                c1, c2, c3, c4, c5 = st.columns([2.8, 0.7, 1, 0.7, 1.8])
+                # 가로 한 줄에 5개 컬럼 배치 (이름/편집, -, 숫자, +, 소진일)
+                c1, c2, c3, c4, c5 = st.columns([2.8, 1, 1.2, 1, 1.8])
                 
-                with c1:
+                with c1: # 재료명 & 설정
                     st.markdown(f"""
-                        <div style="background-color:#f8f9fa; border:1px solid #dee2e6; border-radius:5px; height:42px; display:flex; align-items:center; justify-content:center;">
-                            <span style="font-weight:bold; font-size:11px; text-align:center; line-height:1.2;">{row['food']}</span>
+                        <div style="background-color:#f1f3f5; border:1px solid #dee2e6; border-radius:5px; height:40px; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center;">
+                            <div class="name-text">{row['food']}</div>
                         </div>
                     """, unsafe_allow_html=True)
                     with st.popover("⚙️", use_container_width=True):
-                        new_name = st.text_input("수정", value=row['food'], key=f"ed_{row['id']}")
-                        if st.button("저장", key=f"sv_{row['id']}"): update_inventory_name(row['id'], new_name)
-                        if st.button("🗑️", key=f"dl_{row['id']}", type="secondary"): delete_inventory_item(row['id'])
+                        new_name = st.text_input("수정", value=row['food'], key=f"n_{row['id']}")
+                        if st.button("저장", key=f"s_{row['id']}"): update_inventory_name(row['id'], new_name)
+                        if st.button("🗑️", key=f"d_{row['id']}", type="secondary"): delete_inventory_item(row['id'])
                 
-                with c2:
-                    st.button("－", key=f"m_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], -1), use_container_width=True)
+                with c2: # 감소
+                    st.button("－", key=f"m_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], -1))
                 
-                with c3:
+                with c3: # 수량
                     st.markdown(f"""
-                        <div style="border:2px solid #333; border-radius:5px; height:42px; display:flex; align-items:center; justify-content:center; background:white;">
+                        <div style="border:2px solid #333; border-radius:5px; height:40px; display:flex; align-items:center; justify-content:center; background:white;">
                             <span style="font-weight:bold; font-size:16px;">{row['quantity']}</span>
                         </div>
                     """, unsafe_allow_html=True)
                 
-                with c4:
-                    st.button("＋", key=f"p_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], 1), use_container_width=True)
+                with c4: # 증가
+                    st.button("＋", key=f"p_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], 1))
                 
-                with c5:
+                with c5: # 소진일
                     st.markdown(f"""
-                        <div style="background-color:#e7f3ff; border:1px solid #b3d7ff; border-radius:5px; height:42px; display:flex; flex-direction:column; align-items:center; justify-content:center;">
-                            <span style="font-size:8px; color:#555; margin-bottom:-2px;">소진일</span>
-                            <span style="font-size:9px; font-weight:bold; color:#007bff;">{ex_date}</span>
+                        <div style="background-color:#e7f3ff; border:1px solid #b3d7ff; border-radius:5px; height:40px; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center;">
+                            <span class="small-text">소진일</span>
+                            <span style="font-size:10px; font-weight:bold; color:#007bff;">{ex_date}</span>
                         </div>
                     """, unsafe_allow_html=True)
                 
-                st.markdown("<div style='margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+                st.markdown("<div style='margin-bottom: 5px;'></div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------
 # ---------------------------------------------------------
 # [4. 월간 상세 식단표 - 가시성 개선 버전]
 # ---------------------------------------------------------
