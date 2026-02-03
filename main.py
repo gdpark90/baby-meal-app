@@ -194,14 +194,13 @@ with main_tab1:
         if week_idx == 0:
             st.write("") # 주차 사이 간격
 
+
 # ---------------------------------------------------------
-   # ---------------------------------------------------------
-    # [3. 재료 관리 - 모바일 최적화 & 예상 소진일 반영]
+    # [3. 재료 관리 - 모바일 가독성 극대화 버전]
     # ---------------------------------------------------------
     st.divider()
     st.header("📦 재료 관리 & 예상 소진일")
 
-    # 모든 미래 식단 가져오기 (소진일 계산용)
     future_meals = fetch_meals(date.today().isoformat(), (date.today() + timedelta(days=30)).isoformat())
     
     def get_exhaustion_date(food_name):
@@ -232,33 +231,39 @@ with main_tab1:
             items = inv_df[inv_df['category'] == cat]
             
             for _, row in items.iterrows():
-                # 모바일 대응: 정보 영역과 조작 영역 2단 구성
-                col_info, col_ctrl = st.columns([1.2, 1])
+                ex_date = get_exhaustion_date(row['food'])
                 is_low = row['quantity'] <= 3
                 
-                with col_info:
-                    ex_date = get_exhaustion_date(row['food'])
-                    date_color = "#ff4b4b" if ex_date != "계획 없음" else "#aaa"
-                    # 재료명 클릭 시 수정/삭제 팝오버
-                    with st.popover(f"{'⚠️ ' if is_low else ''}{row['food']}", use_container_width=True):
+                # 배경색이 있는 컨테이너 생성
+                with st.container():
+                    # 스타일을 위한 마크다운 (이름표 색상 강조)
+                    st.markdown(f"""
+                        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 10px; border-left: 5px solid {'#ff4b4b' if is_low else '#4CAF50'}; margin-bottom: 5px;">
+                            <span style="font-weight: bold; font-size: 16px;">{row['food']}</span>
+                            <span style="font-size: 11px; color: #666; float: right;">⏳ 소진: {ex_date}</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # 버튼과 수량을 한 줄에 배치 (가로 3칸)
+                    c1, c2, c3 = st.columns([1, 1, 1])
+                    with c1:
+                        st.button("➖", key=f"m_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], -1), use_container_width=True)
+                    with c2:
+                        st.markdown(f"<h3 style='text-align: center; margin: 0;'>{row['quantity']}</h3>", unsafe_allow_html=True)
+                    with c3:
+                        st.button("➕", key=f"p_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], 1), use_container_width=True)
+                    
+                    # 편집/삭제는 작은 버튼으로 하단에 배치
+                    with st.popover("⚙️ 편집/삭제", use_container_width=True):
                         new_name = st.text_input("이름 수정", value=row['food'], key=f"edit_nm_{row['id']}")
-                        if st.button("수정", key=f"btn_nm_{row['id']}"): update_inventory_name(row['id'], new_name)
-                        if st.button("🗑️ 삭제", key=f"del_{row['id']}", type="secondary"): delete_inventory_item(row['id'])
-                    # 소진 예정일 표시
-                    st.markdown(f"<p style='font-size:11px; margin-top:-10px; padding-left:5px; color:{date_color};'>⏳ 소진: {ex_date}</p>", unsafe_allow_html=True)
-                
-                with col_ctrl:
-                    # 마이너스 버튼 | 숫자 | 플러스 버튼 한 줄 배치
-                    b1, b2, b3 = st.columns([1, 1, 1])
-                    b1.button("－", key=f"m_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], -1), use_container_width=True)
-                    b2.markdown(f"<p style='text-align:center; font-weight:bold; font-size:18px; margin-top:5px;'>{row['quantity']}</p>", unsafe_allow_html=True)
-                    b3.button("＋", key=f"p_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], 1), use_container_width=True)
-                
-                st.markdown("<hr style='margin:10px 0; border:0.5px solid #eee;'>", unsafe_allow_html=True)
+                        if st.button("수정 완료", key=f"btn_nm_{row['id']}"): update_inventory_name(row['id'], new_name)
+                        if st.button("🗑️ 재료 삭제", key=f"del_{row['id']}", type="secondary"): delete_inventory_item(row['id'])
+                    
+                st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # ---------------------------------------------------------
-# [4. 월간 상세 식단표 - 날짜+요일 표시 버전]
+# [4. 월간 상세 식단표 - 가시성 개선 버전]
 # ---------------------------------------------------------
 with main_tab2:
     st.header("🗓️ 월간 상세 식단표")
@@ -272,11 +277,7 @@ with main_tab2:
     
     cal = calendar.monthcalendar(sel_y, sel_m)
     
-    # 요일 헤더
-    h_cols = st.columns(7)
-    weekdays = ["월", "화", "수", "목", "금", "토", "일"]
-    for i, day_name in enumerate(weekdays):
-        h_cols[i].markdown(f"<p style='text-align:center; font-weight:bold; font-size:12px; margin-bottom:5px;'>{day_name}</p>", unsafe_allow_html=True)
+    # 2. 요일 헤더 삭제 (요청사항 반영) - 바로 날짜 카드로 진입
 
     for week in cal:
         w_cols = st.columns(7)
@@ -291,31 +292,30 @@ with main_tab2:
                 
                 with w_cols[i]:
                     content = ""
-                    order = {"아침": 0, "점심": 1, "저녁": 2}
                     sorted_meals = d_meals.copy()
                     if not sorted_meals.empty:
+                        order = {"아침": 0, "점심": 1, "저녁": 2}
                         sorted_meals['sort'] = sorted_meals['meal'].map(order)
                         sorted_meals = sorted_meals.sort_values('sort')
 
                     for _, row in sorted_meals.iterrows():
                         m_icon = "🌅" if row['meal'] == "아침" else "☀️" if row['meal'] == "점심" else "🌙"
                         wt_list = row.get('toppings') or []
-                        wt_str = ",".join([t[:2] for t in wt_list]) # 두 글자씩 요약
-                        
+                        # 폰트 크기 확대(11px) 및 줄바꿈 방지 스타일 적용
                         content += f"""
-                        <div style="margin-bottom:3px; border-bottom:1px dotted #eee; padding-bottom:2px;">
-                            <span style="font-weight:bold;">{m_icon}</span><b>{row['base'][:2]}</b><br>
-                            <span style="color:#777; font-size:8px;">└{wt_str}</span>
+                        <div style="margin-bottom:6px; line-height:1.4;">
+                            <span style="font-size:11px;">{m_icon}<b>{row['base']}</b></span><br>
+                            <span style="color:#666; font-size:10px; margin-left:5px;">└ {", ".join(wt_list) if wt_list else "X"}</span>
                         </div>
                         """
                     
                     st.markdown(f"""
-                        <div style="background-color:{bg}; border:1px solid #ddd; border-radius:6px; 
-                                    padding:2px; min-height:140px; max-height:180px; overflow-y:auto;">
-                            <div style="text-align:center; font-weight:bold; font-size:9px; margin-bottom:4px; border-bottom:1px solid #eee; background:#f9f9f9;">
+                        <div style="background-color:{bg}; border:1px solid #ccc; border-radius:10px; 
+                                    padding:6px; min-height:160px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05);">
+                            <div style="text-align:center; font-weight:bold; font-size:11px; margin-bottom:8px; border-bottom: 2px solid #eee; padding-bottom:3px;">
                                 {sel_m}/{day}({day_kr})
                             </div>
-                            <div style="font-size:8.5px; line-height:1.2;">{content if content else '<p style="color:#ccc; text-align:center; margin-top:10px;">-</p>'}</div>
+                            <div style="word-break: keep-all;">{content if content else '<p style="color:#ddd; text-align:center; padding-top:20px;">-</p>'}</div>
                         </div>
                     """, unsafe_allow_html=True)
             else:
