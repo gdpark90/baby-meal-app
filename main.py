@@ -196,13 +196,14 @@ with main_tab1:
 
 
 # ---------------------------------------------------------
-# ---------------------------------------------------------
-    # [3. 재료 관리 - UI 전면 개편 및 재고임박 리스트 추가]
+
+    # [3. 재료 관리 - NameError 해결 및 UI 최종본]
     # ---------------------------------------------------------
     st.divider()
     st.header("📦 재료 관리 & 예상 소진일")
 
-    # 모든 미래 식단 가져오기 (소진일 계산용)
+    # --- [A] 미래 식단 데이터 로드 및 소진일 계산 함수 정의 ---
+    # 이 부분이 누락되어 에러가 발생한 것입니다.
     future_meals = fetch_meals(date.today().isoformat(), (date.today() + timedelta(days=30)).isoformat())
     
     def get_exhaustion_date(food_name):
@@ -210,15 +211,27 @@ with main_tab1:
         relevant_dates = []
         for _, row in planned.iterrows():
             toppings = row.get('toppings') or []
+            # 베이스, 토핑, 간식 중 하나라도 일치하는지 확인
             if row['base'] == food_name or food_name in toppings or row.get('snack') == food_name:
                 relevant_dates.append(row['date'])
-        if not relevant_dates: return "계획 없음"
-        # 요일 추가 형식으로 반환
+        
+        if not relevant_dates: 
+            return "계획 없음"
+            
         last_dt = datetime.strptime(max(relevant_dates), '%Y-%m-%d')
         day_kr = ["월", "화", "수", "목", "금", "토", "일"][last_dt.weekday()]
         return last_dt.strftime(f'%m/%d({day_kr})')
 
-    # 새로운 재료 추가 폼
+    # --- [B] 재고임박 리스트 (5개 이하) ---
+    low_stock_items = inv_df[inv_df['quantity'] <= 5]
+    if not low_stock_items.empty:
+        st.markdown(f"""
+            <div style="background-color: #fff1f0; border: 1px solid #ffa39e; border-radius: 10px; padding: 12px; margin-bottom: 20px;">
+                <h4 style="margin: 0 0 8px 0; color: #cf1322; font-size: 14px;">⚠️ 재고임박 리스트</h4>
+                {''.join([f"<p style='margin:2px 0; font-size:12px;'>• {row['category']}: <b>{row['food']}</b> ({row['quantity']}개)</p>" for _, row in low_stock_items.iterrows()])}
+            </div>
+        """, unsafe_allow_html=True)
+
     with st.expander("🆕 새로운 재료 추가하기"):
         with st.form("new_food_form", clear_on_submit=True):
             f_name = st.text_input("재료 이름")
@@ -231,67 +244,55 @@ with main_tab1:
                         supabase.table("inventory").insert({"food": f_name, "category": f_cat, "quantity": f_qty}).execute()
                         st.rerun()
 
-    # --- 1. 재고임박 리스트 추가 (재고 5개 이하) ---
-    low_stock_items = inv_df[inv_df['quantity'] <= 5]
-    if not low_stock_items.empty:
-        st.markdown("""
-            <div style="background-color: #fff1f0; border: 1px solid #ffa39e; border-radius: 10px; padding: 12px; margin: 10px 0;">
-                <h4 style="margin: 0 0 8px 0; color: #cf1322; font-size: 15px;">⚠️ 재고임박 리스트</h4>
-        """, unsafe_allow_html=True)
-        for _, row in low_stock_items.iterrows():
-            st.markdown(f"<p style='margin: 0; font-size: 13px; color: #333;'>• {row['category']} : <b>{row['food']}</b> ({row['quantity']}개 남음)</p>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+    # 모바일 가로 한 줄 강제 CSS
+    st.markdown("""
+        <style>
+        [data-testid="column"] { min-width: 0px !important; flex: 1 1 0% !important; }
+        div[data-testid="stHorizontalBlock"] { gap: 5px !important; }
+        button[kind="secondary"] { padding: 0px !important; height: 38px !important; }
+        </style>
+    """, unsafe_allow_html=True)
 
-    # --- 2. 재료 관리 UI 개선 (첨부 이미지 형태 반영) ---
+    # --- [C] 메인 재고 리스트 UI ---
     inv_tabs = st.tabs(["베이스", "토핑", "간식"])
     for idx, cat in enumerate(["베이스", "토핑", "간식"]):
         with inv_tabs[idx]:
             items = inv_df[inv_df['category'] == cat]
-            
             for _, row in items.iterrows():
-                ex_date = get_exhaustion_date(row['food'])
+                ex_date = get_exhaustion_date(row['food']) # 이제 에러 없이 함수 호출 가능
                 
-                # 이미지의 가로형 배치를 구현하기 위한 컬럼 나누기
-                # 이름/편집 | - | 숫자 | + | 소진일
                 c1, c2, c3, c4, c5 = st.columns([2.5, 0.8, 1, 0.8, 1.8])
                 
                 with c1:
-                    # 배경색이 들어간 재료 이름 박스
                     st.markdown(f"""
-                        <div style="background-color: #e9ecef; padding: 8px; border-radius: 8px; text-align: center; border: 1px solid #ced4da;">
-                            <span style="font-weight: bold; font-size: 14px;">{row['food']}</span>
+                        <div style="background-color:#e9ecef; border-radius:5px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid #ced4da;">
+                            <span style="font-weight:bold; font-size:12px;">{row['food']}</span>
                         </div>
                     """, unsafe_allow_html=True)
-                    # 바로 아래 편집/삭제 팝오버 배치
-                    with st.popover("⚙️ 편집/삭제", use_container_width=True):
+                    with st.popover("⚙️", use_container_width=True):
                         new_name = st.text_input("이름 수정", value=row['food'], key=f"edit_nm_{row['id']}")
                         if st.button("수정", key=f"btn_nm_{row['id']}"): update_inventory_name(row['id'], new_name)
                         if st.button("🗑️ 삭제", key=f"del_{row['id']}", type="secondary"): delete_inventory_item(row['id'])
                 
                 with c2:
                     st.button("－", key=f"m_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], -1), use_container_width=True)
-                
                 with c3:
-                    # 숫자 박스 스타일
                     st.markdown(f"""
-                        <div style="border: 2px solid #333; border-radius: 8px; height: 38px; display: flex; align-items: center; justify-content: center;">
-                            <span style="font-weight: bold; font-size: 18px;">{row['quantity']}</span>
+                        <div style="border:2px solid #333; border-radius:5px; height:38px; display:flex; align-items:center; justify-content:center; background:white;">
+                            <span style="font-weight:bold; font-size:16px;">{row['quantity']}</span>
                         </div>
                     """, unsafe_allow_html=True)
-                
                 with c4:
                     st.button("＋", key=f"p_{row['id']}", on_click=update_inventory_qty, args=(row['id'], row['quantity'], 1), use_container_width=True)
-                
                 with c5:
-                    # 재고소진일 정보 박스
                     st.markdown(f"""
-                        <div style="background-color: #e7f3ff; padding: 4px; border-radius: 6px; border: 1px solid #b3d7ff; height: 38px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-                            <span style="font-size: 9px; color: #555;">재고소진일</span>
-                            <span style="font-size: 11px; font-weight: bold; color: #007bff;">{ex_date}</span>
+                        <div style="background-color:#e7f3ff; border:1px solid #b3d7ff; border-radius:5px; height:38px; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+                            <span style="font-size:8px; color:#555; line-height:1;">소진일</span>
+                            <span style="font-size:10px; font-weight:bold; color:#007bff; line-height:1;">{ex_date}</span>
                         </div>
                     """, unsafe_allow_html=True)
-                
-                st.markdown("<div style='margin-bottom: 15px; border-bottom: 1px solid #f0f0f0; padding-bottom: 5px;'></div>", unsafe_allow_html=True)
+                st.markdown("<div style='margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+
 
 # ---------------------------------------------------------
 # ---------------------------------------------------------
