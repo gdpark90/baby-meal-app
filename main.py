@@ -165,7 +165,8 @@ with main_tab1:
         else: st.error("원본 식단이 없습니다.")
 
     # ---------------------------------------------------------
-    # [2. 주간 식단표]
+    # ---------------------------------------------------------
+    # [2. 주간 식단표] - 가독성 최적화 버전
     # ---------------------------------------------------------
     st.divider()
     st.header("📅 2주 식단 플래너")
@@ -181,34 +182,51 @@ with main_tab1:
             current_dt = start_dt + timedelta(days=i)
             d_str = current_dt.isoformat()
             is_today = current_dt == date.today()
-            st.markdown(f"<p style='color:{'#ff4b4b' if is_today else '#31333F'}; font-weight:bold; margin-bottom:5px;'>{'📍 ' if is_today else ''}{days_kr[i]} ({current_dt.strftime('%m/%d')})</p>", unsafe_allow_html=True)
+            
+            st.markdown(f"""
+                <div style='margin-top:15px; margin-bottom:5px;'>
+                    <span style='color:{"#ff4b4b" if is_today else "#31333F"}; font-weight:bold;'>
+                        {'📍 ' if is_today else ''}{days_kr[i]} ({current_dt.strftime('%m/%d')})
+                    </span>
+                </div>
+            """, unsafe_allow_html=True)
 
             m_cols = st.columns(3)
             for idx, m_type in enumerate(["아침", "점심", "저녁"]):
                 with m_cols[idx]:
                     m_row = week_meals[(week_meals['date'] == d_str) & (week_meals['meal'] == m_type)]
+                    
+                    # 데이터 추출
                     if not m_row.empty:
                         tr = m_row.iloc[0]
-                        c_base = tr['base']
+                        c_base = tr['base'] or "미등록"
                         c_tops = tr['toppings'] or []
                         raw_snack = tr['snack']
                         c_snack = raw_snack if isinstance(raw_snack, list) else ([raw_snack] if raw_snack and raw_snack != "없음" else [])
-                        c_amt, c_eaten = int(tr['amount']), bool(tr['is_eaten'])
-                        state_color = "#e8f5e9" if c_eaten else "#fff3e0"
-                        border_color = "#c8e6c9" if c_eaten else "#ffe0b2"
-                        display_name = f"{'✅' if c_eaten else '📝'} {c_base}"
+                        c_amt, c_eaten = int(tr['amount'] or 0), bool(tr['is_eaten'])
+                        bg_color = "#e8f5e9" if c_eaten else "#fff3e0"
                     else:
-                        c_base, c_tops, c_snack, c_amt, c_eaten = "없음", [], [], 0, False
-                        state_color, border_color, display_name = "#f9f9f9", "#eeeeee", "미등록"
+                        c_base, c_tops, c_snack, c_amt, c_eaten = "미등록", [], [], 0, False
+                        bg_color = "#f9f9f9"
 
+                    # --- [UI 카드 노출] ---
+                    st.markdown(f"""
+                        <div style="background-color:{bg_color}; padding:10px; border-radius:8px; border:1px solid #ddd; min-height:80px; margin-bottom:5px;">
+                            <div style="font-size:12px; font-weight:bold; margin-bottom:3px;">{m_type} {'✅' if c_eaten else ''}</div>
+                            <div style="font-size:13px; color:#333;">🍚 {c_base}</div>
+                            <div style="font-size:11px; color:#666;">🥗 {', '.join(c_tops) if c_tops else '-'}</div>
+                            {f'<div style="font-size:11px; color:#d4a017;">🍪 {", ".join(c_snack)}</div>' if c_snack else ''}
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                    # --- [편집용 팝오버] ---
                     unique_key = f"wk_{d_str}_{m_type}"
-                    st.markdown(f"<style>div[data-testid='stPopover'] > button:nth-of-type(1) {{ background-color: {state_color} !important; border-color: {border_color} !important; }}</style>", unsafe_allow_html=True)
-                    with st.popover(f"{m_type}\n{display_name}", use_container_width=True):
+                    with st.popover("📝 편집", use_container_width=True):
                         st.write(f"### {current_dt.strftime('%m/%d')} {m_type}")
                         c1, c2 = st.columns(2)
                         with c1: 
                             if st.button("📋 복사", key=f"btn_cp_{unique_key}"):
-                                st.session_state.clipboard = {"base": c_base, "toppings": c_tops, "snack": c_snack, "new_food": tr.get('new_food', []), "amount": c_amt}
+                                st.session_state.clipboard = {"base": c_base, "toppings": c_tops, "snack": c_snack, "new_food": tr.get('new_food', []) if not m_row.empty else [], "amount": c_amt}
                                 st.toast("복사됨")
                         with c2:
                             if st.button("📥 붙여넣기", key=f"btn_ps_{unique_key}", disabled=st.session_state.clipboard is None):
@@ -221,7 +239,7 @@ with main_tab1:
                         u_amt = st.number_input("📏 양", min_value=0, value=c_amt, key=f"num_a_{unique_key}")
                         u_eaten = st.checkbox("✅ 완료", value=c_eaten, key=f"chk_e_{unique_key}")
                         if st.button("저장", key=f"btn_sv_{unique_key}", type="primary", use_container_width=True):
-                            save_meal(d_str, m_type, u_base, u_tops, u_snack, tr.get('new_food', []), u_amt, u_eaten)
+                            save_meal(d_str, m_type, u_base, u_tops, u_snack, tr.get('new_food', []) if not m_row.empty else [], u_amt, u_eaten)
 
     # ---------------------------------------------------------
     # [3. 재료 관리 & 새 재료 추가]
@@ -267,12 +285,13 @@ with main_tab1:
                 with c3:
                     st.markdown(f"<div style='background-color:#e7f3ff; border:1px solid #b3d7ff; border-radius:5px; height:42px; text-align:center;'><span style='font-size:8px;'>소진일</span><br><span style='font-size:11px; font-weight:bold;'>{ex_date}</span></div>", unsafe_allow_html=True)
 
-# [4. 월간 식단표]
+# [4. 월간 식단표] - 코드 노출 오류 수정 버전
 with main_tab2:
     st.header("🗓️ 월간 상세 식단표")
     now = datetime.now()
     sel_y = st.selectbox("년", range(now.year-1, now.year+2), index=1)
     sel_m = st.selectbox("월", range(1, 13), index=now.month-1)
+    
     m_data = fetch_meals(date(sel_y, sel_m, 1).isoformat(), date(sel_y, sel_m, calendar.monthrange(sel_y, sel_m)[1]).isoformat())
     cal = calendar.monthcalendar(sel_y, sel_m)
 
@@ -283,10 +302,37 @@ with main_tab2:
                 target_dt = date(sel_y, sel_m, day)
                 d_str = target_dt.isoformat()
                 d_meals = m_data[m_data['date'] == d_str]
-                bg = "#ffffff" if d_meals.empty else ("#e8f5e9" if d_meals['is_eaten'].all() else "#fff9c4")
+                
+                # 배경색 결정
+                if d_meals.empty:
+                    bg = "#ffffff"
+                elif d_meals['is_eaten'].all():
+                    bg = "#e8f5e9"
+                else:
+                    bg = "#fff9c4"
+
                 with w_cols[i]:
                     content = ""
                     for _, row in d_meals.sort_values('meal').iterrows():
                         m_icon = "🌅" if row['meal'] == "아침" else "☀️" if row['meal'] == "점심" else "🌙"
-                        content += f"<div style='font-size:10px;'>{m_icon}<b>{row['base']}</b></div>"
-                    st.markdown(f"<div style='background-color:{bg}; border:1px solid #ccc; border-radius:10px; padding:5px; min-height:120px;'><div style='text-align:center; font-weight:bold; font-size:10px; border-bottom:1px solid #eee;'>{day}</div>{content}</div>", unsafe_allow_html=True)
+                        r_base = row['base'] or "없음"
+                        r_tops = row['toppings'] or []
+                        r_snack = row['snack']
+                        r_snack_list = r_snack if isinstance(r_snack, list) else ([r_snack] if r_snack and r_snack != "없음" else [])
+                        
+                        # 내용 구성
+                        content += f"<div style='margin-bottom:4px; border-bottom:1px solid #f0f0f0;'>"
+                        content += f"<span style='font-size:10px;'>{m_icon}<b>{r_base}</b></span>"
+                        if r_tops:
+                            content += f"<div style='color:#666; font-size:8px; padding-left:12px;'>└ {','.join(r_tops)}</div>"
+                        if r_snack_list:
+                            content += f"<div style='color:#d4a017; font-size:8px; padding-left:12px;'>🍪 {','.join(r_snack_list)}</div>"
+                        content += "</div>"
+                    
+                    # 최종 렌더링
+                    st.markdown(f"""
+                        <div style='background-color:{bg}; border:1px solid #ddd; border-radius:8px; padding:5px; min-height:130px;'>
+                            <div style='text-align:center; font-weight:bold; font-size:11px; border-bottom:1px solid #eee; margin-bottom:5px;'>{day}</div>
+                            {content}
+                        </div>
+                    """, unsafe_allow_html=True)
