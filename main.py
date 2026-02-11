@@ -65,8 +65,15 @@ def calculate_depletion(inv_df):
                 m_tops = meal['toppings'] if isinstance(meal['toppings'], list) else []
                 m_snack = meal['snack'] if isinstance(meal['snack'], list) else []
                 combined_used = m_base + m_tops + m_snack
+                
                 if food_name in combined_used:
-                    usage_dates.append(meal['date'])
+                    # 베이스인 경우 기본적으로 2개씩 소진하는 것으로 계산 (예측 시)
+                    if item['category'] == '베이스' and food_name == meal['base']:
+                        usage_dates.append(meal['date'])
+                        usage_dates.append(meal['date'])
+                    else:
+                        usage_dates.append(meal['date'])
+        
         usage_dates.sort()
         if current_qty <= 0:
             depletion_results[food_name] = "재고 없음"
@@ -76,28 +83,38 @@ def calculate_depletion(inv_df):
             depletion_results[food_name] = "여유"
     return depletion_results
 
-def update_inventory_stock(base, toppings, snack, change):
-    items_to_update = []
-    if base and base != "없음": items_to_update.append(base)
-    if toppings: items_to_update.extend(toppings)
-    if snack: items_to_update.extend(snack)
-
-    for item_name in items_to_update:
-        res = supabase.table("inventory").select("id", "quantity").eq("food", item_name).execute()
+# [업데이트] 베이스 수량 차감 로직 반영 (기본 2개, 체크 시 1개)
+def update_inventory_stock(base, toppings, snack, change_direction, base_use_one=False):
+    """
+    change_direction: -1 (차감), +1 (복구)
+    """
+    # 1. 베이스 처리
+    if base and base != "없음":
+        qty_to_change = 1 if base_use_one else 2
+        res = supabase.table("inventory").select("id", "quantity").eq("food", base).execute()
         if res.data:
-            current_q = int(res.data[0]['quantity'])
-            new_q = max(0, current_q + change)
+            new_q = max(0, int(res.data[0]['quantity']) + (qty_to_change * change_direction))
             supabase.table("inventory").update({"quantity": new_q}).eq("id", res.data[0]['id']).execute()
 
-def save_meal(date_str, meal_type, base, toppings, snack, new_food, amount, eaten, run_rerun=True):
+    # 2. 토핑 및 간식 처리 (기본 1개)
+    others = (toppings if isinstance(toppings, list) else []) + (snack if isinstance(snack, list) else [])
+    for item_name in others:
+        if not item_name or item_name == "없음": continue
+        res = supabase.table("inventory").select("id", "quantity").eq("food", item_name).execute()
+        if res.data:
+            new_q = max(0, int(res.data[0]['quantity']) + (1 * change_direction))
+            supabase.table("inventory").update({"quantity": new_q}).eq("id", res.data[0]['id']).execute()
+
+def save_meal(date_str, meal_type, base, toppings, snack, new_food, amount, eaten, base_use_one=False, run_rerun=True):
     existing = supabase.table("meal_plan").select("*").eq("date", date_str).eq("meal", meal_type).execute()
     new_eaten = bool(eaten)
     old_eaten = existing.data[0]['is_eaten'] if existing.data else False
     
+    # 상태 변화가 있을 때만 재고 업데이트
     if new_eaten and not old_eaten:
-        update_inventory_stock(base, toppings, snack, -1)
+        update_inventory_stock(base, toppings, snack, -1, base_use_one)
     elif not new_eaten and old_eaten:
-        update_inventory_stock(base, toppings, snack, 1)
+        update_inventory_stock(base, toppings, snack, 1, base_use_one)
 
     def filter_none(items):
         if not items: return []
@@ -192,7 +209,13 @@ with main_tab1:
                     else:
                         st.warning("복사된 내용이 없습니다.")
 
-                u_base = st.selectbox("🍚 베이스", food_options["베이스"], index=food_options["베이스"].index(c_base) if c_base in food_options["베이스"] else 0, key=f"t_b_{m_type}")
+                # [업데이트] 베이스 입력칸 옆에 1개 체크박스 추가
+                b_col1, b_col2 = st.columns([3, 1])
+                with b_col1:
+                    u_base = st.selectbox("🍚 베이스", food_options["베이스"], index=food_options["베이스"].index(c_base) if c_base in food_options["베이스"] else 0, key=f"t_b_{m_type}")
+                with b_col2:
+                    u_base_one = st.checkbox("1개", key=f"t_b1_{m_type}", help="체크 시 1개 차감, 미체크 시 2개 차감")
+
                 u_tops = st.multiselect("🥗 토핑", food_options["토핑"], default=[t for t in (c_tops if isinstance(c_tops, list) else []) if t in food_options["토핑"]], key=f"t_t_{m_type}")
                 u_snack = st.multiselect("🍪 간식", food_options["간식"], default=[s for s in (c_snack if isinstance(c_snack, list) else []) if s in food_options["간식"]], key=f"t_s_{m_type}")
                 
@@ -211,7 +234,7 @@ with main_tab1:
                 u_amt = st.number_input("📏 양", min_value=0, value=c_amt, key=f"t_a_{m_type}")
                 u_eaten = st.checkbox("✅ 완료", value=c_eaten, key=f"t_e_{m_type}")
                 if st.button("저장", key=f"t_btn_{m_type}", type="primary", use_container_width=True):
-                    save_meal(t_str, m_type, u_base, u_tops, u_snack, u_new_final, u_amt, u_eaten)
+                    save_meal(t_str, m_type, u_base, u_tops, u_snack, u_new_final, u_amt, u_eaten, base_use_one=u_base_one)
 
     with st.expander("📂 식단 일괄복사"):
         st.write("특정 날짜의 식단을 가져와서 여러 날짜에 한 번에 붙여넣습니다.")
@@ -278,7 +301,13 @@ with main_tab1:
                                 cb = st.session_state.clipboard
                                 save_meal(d_str, m_type, cb['base'], cb['toppings'], cb['snack'], cb['new_food'], cb['amount'], False)
                         
-                        u_base = st.selectbox("베이스", food_options["베이스"], index=food_options["베이스"].index(w_base) if w_base in food_options["베이스"] else 0, key=f"wb_{d_str}_{m_type}")
+                        # [업데이트] 주간 플래너에도 베이스 1개 체크박스 추가
+                        wb_col1, wb_col2 = st.columns([3, 1])
+                        with wb_col1:
+                            u_base = st.selectbox("베이스", food_options["베이스"], index=food_options["베이스"].index(w_base) if w_base in food_options["베이스"] else 0, key=f"wb_{d_str}_{m_type}")
+                        with wb_col2:
+                            u_base_one_w = st.checkbox("1개", key=f"wb1_{d_str}_{m_type}")
+
                         u_tops = st.multiselect("토핑", food_options["토핑"], default=[t for t in (w_tops if isinstance(w_tops, list) else []) if t in food_options["토핑"]], key=f"wt_{d_str}_{m_type}")
                         u_snack = st.multiselect("간식", food_options["간식"], default=[s for s in (w_snack if isinstance(w_snack, list) else []) if s in food_options["간식"]], key=f"ws_{d_str}_{m_type}")
                         
@@ -297,7 +326,7 @@ with main_tab1:
                         u_amt = st.number_input("양", min_value=0, value=w_amt, key=f"wa_{d_str}_{m_type}")
                         u_eaten = st.checkbox("완료", value=w_eaten, key=f"we_{d_str}_{m_type}")
                         if st.button("저장", key=f"wbtn_{d_str}_{idx}", type="primary", use_container_width=True):
-                            save_meal(d_str, m_type, u_base, u_tops, u_snack, u_new_final_w, u_amt, u_eaten)
+                            save_meal(d_str, m_type, u_base, u_tops, u_snack, u_new_final_w, u_amt, u_eaten, base_use_one=u_base_one_w)
 
     st.divider()
     st.header("📦 재료 관리 & 소진 예측")
@@ -313,18 +342,49 @@ with main_tab1:
                     supabase.table("inventory").insert({"food": n_name, "category": n_cat, "quantity": 0}).execute()
                     st.rerun()
 
+    # [업데이트] 재고 부족 주의 및 재고 소진 임박 표시
     st.subheader("⚠️ 재고부족주의")
     low_stock = {"베이스": [], "토핑": [], "간식": []}
+    imminent_stock = {"베이스": [], "토핑": [], "간식": []}
+    
+    today = date.today()
+    seven_days_later = today + timedelta(days=7)
+
     for _, row in inv_df.iterrows():
         f_name, f_qty, f_cat = row['food'], int(row['quantity']), row['category']
-        if f_qty <= 5: low_stock[f_cat].append(f"{f_name}({f_qty}개 남음)")
+        # 1. 재고 5개 이하
+        if f_qty <= 5: 
+            low_stock[f_cat].append(f"{f_name}({f_qty}개 남음)")
+        
+        # 2. 소진 임박 (7일 이내)
+        d_val = depletion_map.get(f_name)
+        if d_val and d_val not in ["여유", "재고 없음", "미정"]:
+            try:
+                d_date = date.fromisoformat(d_val)
+                if today <= d_date <= seven_days_later:
+                    imminent_stock[f_cat].append(f"{f_name} ({d_date.strftime('%m/%d')} 소진예상, {f_qty}개 남음)")
+            except: pass
     
+    # UI 출력: 재고부족
     if any(low_stock.values()):
-        st.markdown('<div style="background-color:#fff5f5; padding:15px; border-radius:10px; border:1px solid #ffcfcf;">', unsafe_allow_html=True)
+        st.markdown('<div style="background-color:#fff5f5; padding:12px; border-radius:10px; border:1px solid #ffcfcf; margin-bottom:10px;">', unsafe_allow_html=True)
+        st.markdown("<b style='color:#e53935;'>[재고부족주의]</b>", unsafe_allow_html=True)
         for cat, items in low_stock.items():
             if items: st.markdown(f"**• {cat}** : {', '.join(items)}")
         st.markdown('</div>', unsafe_allow_html=True)
-    else: st.success("재고가 충분합니다. 😊")
+    
+    # UI 출력: 소진임박 (새로 추가)
+    if any(imminent_stock.values()):
+        st.markdown('<div style="background-color:#fff9db; padding:12px; border-radius:10px; border:1px solid #fab005; margin-bottom:10px;">', unsafe_allow_html=True)
+        st.markdown("<b style='color:#f08c00;'>[재고소진임박 - 7일 이내]</b>", unsafe_allow_html=True)
+        for cat, items in imminent_stock.items():
+            if items:
+                for item in items:
+                    st.markdown(f"**• {cat}** : {item}")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if not any(low_stock.values()) and not any(imminent_stock.values()):
+        st.success("재고가 충분하고 소진 임박한 재료가 없습니다. 😊")
 
     inv_tabs = st.tabs(["🍚 베이스", "🥗 토핑", "🍪 간식"])
     for idx, cat in enumerate(["베이스", "토핑", "간식"]):
@@ -355,7 +415,7 @@ with main_tab1:
                     st.divider()
 
 # ======================
-# 4. 월간 식단표 (날짜 색상 업데이트)
+# 4. 월간 식단표
 # ======================
 with main_tab2:
     st.header("🗓️ 월간 상세 식단표")
@@ -376,13 +436,9 @@ with main_tab2:
                 
                 formatted_day = f"{sel_m}/{day}({days_kr[wd]})"
                 
-                # [업데이트] 요일별 색상 구분 (토: 파랑, 일: 빨강)
-                if i == 5: # 토요일
-                    day_color = "blue"
-                elif i == 6: # 일요일
-                    day_color = "red"
-                else:
-                    day_color = "black"
+                if i == 5: day_color = "blue"
+                elif i == 6: day_color = "red"
+                else: day_color = "black"
                 
                 d_meals = m_data[m_data['date'] == d_str].copy()
                 bg = "#ffffff" if d_meals.empty else ("#e8f5e9" if d_meals['is_eaten'].all() else "#fff9c4")
