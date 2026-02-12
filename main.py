@@ -23,6 +23,11 @@ if "clipboard" not in st.session_state:
 # 2. 데이터 처리 및 헬퍼 함수
 # ======================
 
+# [추가된 콜백 함수] 사용자가 수량을 직접 변경했을 때 DB에 즉시 반영
+def on_quantity_change(f_id, state_key):
+    new_val = st.session_state[state_key]
+    supabase.table("inventory").update({"quantity": int(new_val)}).eq("id", f_id).execute()
+
 def fetch_inventory():
     res = supabase.table("inventory").select("*").order("food").execute()
     return pd.DataFrame(res.data)
@@ -61,18 +66,20 @@ def calculate_depletion(inv_df):
         usage_dates = []
         if not future_meals.empty:
             for _, meal in future_meals.iterrows():
-                m_base = [meal['base']] if meal['base'] else []
+                m_base_raw = meal['base'] if meal['base'] else ""
+                m_bases = [b.strip() for b in m_base_raw.split(',') if b.strip() and b.strip() != "없음"]
                 m_tops = meal['toppings'] if isinstance(meal['toppings'], list) else []
                 m_snack = meal['snack'] if isinstance(meal['snack'], list) else []
-                combined_used = m_base + m_tops + m_snack
                 
-                if food_name in combined_used:
-                    # 베이스인 경우 기본적으로 2개씩 소진하는 것으로 계산 (예측 시)
-                    if item['category'] == '베이스' and food_name == meal['base']:
-                        usage_dates.append(meal['date'])
+                if food_name in m_bases:
+                    if len(m_bases) > 1:
                         usage_dates.append(meal['date'])
                     else:
                         usage_dates.append(meal['date'])
+                        usage_dates.append(meal['date'])
+                
+                if food_name in m_tops or food_name in m_snack:
+                    usage_dates.append(meal['date'])
         
         usage_dates.sort()
         if current_qty <= 0:
@@ -83,38 +90,39 @@ def calculate_depletion(inv_df):
             depletion_results[food_name] = "여유"
     return depletion_results
 
-# [업데이트] 베이스 수량 차감 로직 반영 (기본 2개, 체크 시 1개)
-def update_inventory_stock(base, toppings, snack, change_direction, base_use_one=False):
-    """
-    change_direction: -1 (차감), +1 (복구)
-    """
-    # 1. 베이스 처리
-    if base and base != "없음":
-        qty_to_change = 1 if base_use_one else 2
-        res = supabase.table("inventory").select("id", "quantity").eq("food", base).execute()
-        if res.data:
-            new_q = max(0, int(res.data[0]['quantity']) + (qty_to_change * change_direction))
-            supabase.table("inventory").update({"quantity": new_q}).eq("id", res.data[0]['id']).execute()
+def update_inventory_stock(base_str, toppings, snack, change_direction):
+    if base_str and base_str != "없음":
+        bases = [b.strip() for b in base_str.split(',') if b.strip() and b.strip() != "없음"]
+        qty_per_base = 1 if len(bases) > 1 else 2
+        for b in bases:
+            res = supabase.table("inventory").select("id", "quantity").eq("food", b).execute()
+            if res.data:
+                item_id = res.data[0]['id']
+                new_q = max(0, int(res.data[0]['quantity']) + (qty_per_base * change_direction))
+                supabase.table("inventory").update({"quantity": new_q}).eq("id", item_id).execute()
+                st.session_state[f"q_{item_id}"] = new_q
 
-    # 2. 토핑 및 간식 처리 (기본 1개)
     others = (toppings if isinstance(toppings, list) else []) + (snack if isinstance(snack, list) else [])
     for item_name in others:
         if not item_name or item_name == "없음": continue
         res = supabase.table("inventory").select("id", "quantity").eq("food", item_name).execute()
         if res.data:
+            item_id = res.data[0]['id']
             new_q = max(0, int(res.data[0]['quantity']) + (1 * change_direction))
-            supabase.table("inventory").update({"quantity": new_q}).eq("id", res.data[0]['id']).execute()
+            supabase.table("inventory").update({"quantity": new_q}).eq("id", item_id).execute()
+            st.session_state[f"q_{item_id}"] = new_q
 
-def save_meal(date_str, meal_type, base, toppings, snack, new_food, amount, eaten, base_use_one=False, run_rerun=True):
+def save_meal(date_str, meal_type, base_val, toppings, snack, new_food, amount, eaten, run_rerun=True):
     existing = supabase.table("meal_plan").select("*").eq("date", date_str).eq("meal", meal_type).execute()
     new_eaten = bool(eaten)
     old_eaten = existing.data[0]['is_eaten'] if existing.data else False
     
-    # 상태 변화가 있을 때만 재고 업데이트
+    final_base = ", ".join(base_val) if isinstance(base_val, list) else base_val
+
     if new_eaten and not old_eaten:
-        update_inventory_stock(base, toppings, snack, -1, base_use_one)
+        update_inventory_stock(final_base, toppings, snack, -1)
     elif not new_eaten and old_eaten:
-        update_inventory_stock(base, toppings, snack, 1, base_use_one)
+        update_inventory_stock(final_base, toppings, snack, 1)
 
     def filter_none(items):
         if not items: return []
@@ -122,7 +130,7 @@ def save_meal(date_str, meal_type, base, toppings, snack, new_food, amount, eate
         return [i for i in items if i and i != "없음"]
     
     data = {
-        "date": date_str, "meal": meal_type, "base": base, 
+        "date": date_str, "meal": meal_type, "base": final_base, 
         "toppings": filter_none(toppings), "snack": filter_none(snack), 
         "new_food": filter_none(new_food), "amount": int(amount), "is_eaten": new_eaten
     }
@@ -140,7 +148,6 @@ def clean_list_str(items, is_new_food=False):
     if not items: return ""
     if isinstance(items, str):
         items = items.replace('[', '').replace(']', '').replace('"', '').replace("'", "").split(',')
-    
     cleaned = []
     for i in items:
         val = str(i).strip().replace('"', '').replace("'", "")
@@ -170,10 +177,10 @@ food_options = {
 # 4. 메인 화면 레이아웃
 # ======================
 st.title("👶 주하 식단 매니저 PRO")
-main_tab1, main_tab2 = st.tabs(["📊 데일리 & 주간", "📅 월간 식단표"])
+main_tab1, main_tab_week, main_tab2 = st.tabs(["📊 데일리", "📅 주간 식단표", "🗓️ 월간 식단표"])
 
+# --- [TAB 1: 데일리] ---
 with main_tab1:
-    # [1. 오늘의 식단]
     target_date = st.date_input("📅 날짜 선택", date.today())
     t_str = target_date.isoformat()
     t_meals = fetch_meals(t_str, t_str)
@@ -185,36 +192,46 @@ with main_tab1:
             m_row = t_meals[t_meals['meal'] == m_type]
             if not m_row.empty:
                 tr = m_row.iloc[0]
-                c_base, c_tops, c_snack, c_new, c_amt, c_eaten = tr['base'] or "없음", tr['toppings'] or [], tr['snack'] or [], tr['new_food'] or [], int(tr['amount'] or 0), bool(tr['is_eaten'])
+                c_base_raw, c_tops, c_snack, c_new, c_amt, c_eaten = tr['base'] or "없음", tr['toppings'] or [], tr['snack'] or [], tr['new_food'] or [], int(tr['amount'] or 0), bool(tr['is_eaten'])
             else:
-                c_base, c_tops, c_snack, c_new, c_amt, c_eaten = "없음", [], [], [], 0, False
+                c_base_raw, c_tops, c_snack, c_new, c_amt, c_eaten = "없음", [], [], [], 0, False
             
             b_color = "#e8f5e9" if c_eaten else "#f0f2f6"
+            base_display = clean_list_str(c_base_raw)
             tops_txt, snack_txt = clean_list_str(c_tops), clean_list_str(c_snack)
             new_txt = clean_list_str(c_new, is_new_food=True)
 
             new_tag = f'<div style="margin-top:5px;"><span style="background-color:yellow; color:red; font-size:10px; font-weight:bold; padding:2px;">🆕 {new_txt}</span></div>' if new_txt else ""
-            st.markdown(f'<div style="background-color:{b_color}; padding:10px; border-radius:10px; border:2px solid #ddd; min-height:160px;"><strong style="font-size:14px;">☀️ {m_type}</strong><br><span style="font-size:12px;">🍚 {c_base}</span><br><span style="font-size:11px; color:#666;">🥗 {tops_txt if tops_txt else "토핑없음"}</span><br><span style="font-size:11px; color:#d4a017;">🍪 {snack_txt if snack_txt else "간식없음"}</span>{new_tag}<br><small>📏 {c_amt}ml/g {"✅" if c_eaten else ""}</small></div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="background-color:{b_color}; padding:10px; border-radius:10px; border:2px solid #ddd; min-height:160px;"><strong style="font-size:14px;">☀️ {m_type}</strong><br><span style="font-size:12px;">🍚 {base_display}</span><br><span style="font-size:11px; color:#666;">🥗 {tops_txt if tops_txt else "토핑없음"}</span><br><span style="font-size:11px; color:#d4a017;">🍪 {snack_txt if snack_txt else "간식없음"}</span>{new_tag}<br><small>📏 {c_amt}ml/g {"✅" if c_eaten else ""}</small></div>', unsafe_allow_html=True)
 
             with st.popover(f"📝 {m_type} 편집", use_container_width=True):
                 col_cp1, col_cp2 = st.columns(2)
                 if col_cp1.button("📋 복사", key=f"cp_{m_type}"):
-                    st.session_state.clipboard = {"base": c_base, "toppings": c_tops, "snack": c_snack, "new_food": c_new, "amount": c_amt}
+                    st.session_state.clipboard = {"base": c_base_raw, "toppings": c_tops, "snack": c_snack, "new_food": c_new, "amount": c_amt}
                     st.toast("클립보드에 복사되었습니다!")
                 
                 if col_cp2.button("📥 붙여넣기", key=f"ps_{m_type}"):
                     if st.session_state.clipboard:
                         cb = st.session_state.clipboard
                         save_meal(t_str, m_type, cb['base'], cb['toppings'], cb['snack'], cb['new_food'], cb['amount'], False)
-                    else:
-                        st.warning("복사된 내용이 없습니다.")
+                    else: st.warning("복사된 내용이 없습니다.")
 
-                # [업데이트] 베이스 입력칸 옆에 1개 체크박스 추가
+                current_bases = [b.strip() for b in c_base_raw.split(',') if b.strip()]
+                is_multiple = len(current_bases) > 1
                 b_col1, b_col2 = st.columns([3, 1])
                 with b_col1:
-                    u_base = st.selectbox("🍚 베이스", food_options["베이스"], index=food_options["베이스"].index(c_base) if c_base in food_options["베이스"] else 0, key=f"t_b_{m_type}")
+                    u_base1 = st.selectbox("🍚 베이스 1", food_options["베이스"], 
+                                         index=food_options["베이스"].index(current_bases[0]) if current_bases and current_bases[0] in food_options["베이스"] else 0, 
+                                         key=f"t_b1_{m_type}")
                 with b_col2:
-                    u_base_one = st.checkbox("1개", key=f"t_b1_{m_type}", help="체크 시 1개 차감, 미체크 시 2개 차감")
+                    u_base_one = st.checkbox("1개", value=is_multiple, key=f"t_chk1_{m_type}")
+
+                u_base_final = [u_base1]
+                if u_base_one:
+                    u_base2 = st.selectbox("🍚 베이스 2", food_options["베이스"], 
+                                         index=food_options["베이스"].index(current_bases[1]) if len(current_bases) > 1 and current_bases[1] in food_options["베이스"] else 0, 
+                                         key=f"t_b2_{m_type}")
+                    u_base_final.append(u_base2)
 
                 u_tops = st.multiselect("🥗 토핑", food_options["토핑"], default=[t for t in (c_tops if isinstance(c_tops, list) else []) if t in food_options["토핑"]], key=f"t_t_{m_type}")
                 u_snack = st.multiselect("🍪 간식", food_options["간식"], default=[s for s in (c_snack if isinstance(c_snack, list) else []) if s in food_options["간식"]], key=f"t_s_{m_type}")
@@ -234,234 +251,184 @@ with main_tab1:
                 u_amt = st.number_input("📏 양", min_value=0, value=c_amt, key=f"t_a_{m_type}")
                 u_eaten = st.checkbox("✅ 완료", value=c_eaten, key=f"t_e_{m_type}")
                 if st.button("저장", key=f"t_btn_{m_type}", type="primary", use_container_width=True):
-                    save_meal(t_str, m_type, u_base, u_tops, u_snack, u_new_final, u_amt, u_eaten, base_use_one=u_base_one)
+                    save_meal(t_str, m_type, u_base_final, u_tops, u_snack, u_new_final, u_amt, u_eaten)
 
     with st.expander("📂 식단 일괄복사"):
-        st.write("특정 날짜의 식단을 가져와서 여러 날짜에 한 번에 붙여넣습니다.")
         c_bulk1, c_bulk2 = st.columns(2)
         with c_bulk1:
             source_date = st.date_input("1. 복사할 식단 날짜 선택", target_date, key="bulk_src_date")
             source_meal = st.selectbox("2. 복사할 끼니 선택", ["아침", "점심", "저녁"], key="bulk_src_meal")
         with c_bulk2:
-            target_dates = st.multiselect("3. 복사해넣을 날짜들 선택", 
-                                          pd.date_range(start=date.today(), periods=30).date,
-                                          key="bulk_tgt_dates")
-        
-        if st.button("🚀 선택한 날짜들에 식단 일괄 복사", use_container_width=True):
+            target_dates = st.multiselect("3. 복사해넣을 날짜들 선택", pd.date_range(start=date.today(), periods=30).date, key="bulk_tgt_dates")
+        if st.button("🚀 일괄 복사 실행", use_container_width=True):
             src_str = source_date.isoformat()
             src_meals = fetch_meals(src_str, src_str)
             target_meal_data = src_meals[src_meals['meal'] == source_meal]
-            
             if not target_meal_data.empty and target_dates:
                 row = target_meal_data.iloc[0]
                 for d in target_dates:
                     save_meal(d.isoformat(), source_meal, row['base'], row['toppings'], row['snack'], row['new_food'], row['amount'], False, run_rerun=False)
-                st.success(f"{source_date}의 {source_meal} 식단을 {len(target_dates)}일로 복사했습니다!")
+                st.success("복사 완료!")
                 st.rerun()
-            elif not target_dates:
-                st.warning("복사해넣을 날짜를 선택해주세요.")
-            else:
-                st.warning(f"{source_date}에 해당 끼니 데이터가 없습니다.")
 
-    st.divider()
+# --- [TAB: 주간 식단표] ---
+with main_tab_week:
     st.header("📅 주간 식단 플래너")
     curr_week_start = target_date - timedelta(days=target_date.weekday())
-    for week_idx in range(1):
-        start_dt = curr_week_start + timedelta(weeks=week_idx)
-        st.subheader("🌟 이번 주")
-        week_meals = fetch_meals(start_dt.isoformat(), (start_dt + timedelta(days=6)).isoformat())
-        for i in range(7):
-            current_dt = start_dt + timedelta(days=i)
-            d_str = current_dt.isoformat()
-            st.write(f"**{current_dt.strftime('%m/%d (%a)')}**")
-            m_cols = st.columns(3)
-            for idx, m_type in enumerate(["아침", "점심", "저녁"]):
-                with m_cols[idx]:
-                    m_row = week_meals[(week_meals['date'] == d_str) & (week_meals['meal'] == m_type)]
-                    if not m_row.empty:
-                        tr = m_row.iloc[0]
-                        w_base, w_tops, w_snack, w_new, w_amt, w_eaten = tr['base'] or "미등록", tr['toppings'] or [], tr['snack'] or [], tr['new_food'] or [], int(tr['amount'] or 0), bool(tr['is_eaten'])
-                    else:
-                        w_base, w_tops, w_snack, w_new, w_amt, w_eaten = "미등록", [], [], [], 0, False
-                    
-                    bg = "#e8f5e9" if w_eaten else "#fff3e0"
-                    t_txt, s_txt = clean_list_str(w_tops), clean_list_str(w_snack)
-                    n_txt = clean_list_str(w_new, is_new_food=True)
-                    snack_line = f'<br><span style="color:#d4a017;">🍪 {s_txt}</span>' if s_txt else ""
-                    new_line = f'<br><span style="color:red; font-weight:bold; font-size:10px;">🆕 {n_txt}</span>' if n_txt else ""
-                    st.markdown(f'<div style="background-color:{bg}; padding:8px; border-radius:8px; border:1px solid #ddd; min-height:100px; font-size:12px;"><b>{m_type}</b><br>🍚 {w_base}<br><span style="color:#666;">🥗 {t_txt if t_txt else "-"}</span>{snack_line}{new_line}</div>', unsafe_allow_html=True)
-                    
-                    with st.popover("📝", use_container_width=True):
-                        cw1, cw2 = st.columns(2)
-                        if cw1.button("📋", key=f"wcp_{d_str}_{m_type}"):
-                            st.session_state.clipboard = {"base": w_base, "toppings": w_tops, "snack": w_snack, "new_food": w_new, "amount": w_amt}
-                            st.toast("복사 완료")
-                        if cw2.button("📥", key=f"wps_{d_str}_{m_type}"):
-                            if st.session_state.clipboard:
-                                cb = st.session_state.clipboard
-                                save_meal(d_str, m_type, cb['base'], cb['toppings'], cb['snack'], cb['new_food'], cb['amount'], False)
-                        
-                        # [업데이트] 주간 플래너에도 베이스 1개 체크박스 추가
-                        wb_col1, wb_col2 = st.columns([3, 1])
-                        with wb_col1:
-                            u_base = st.selectbox("베이스", food_options["베이스"], index=food_options["베이스"].index(w_base) if w_base in food_options["베이스"] else 0, key=f"wb_{d_str}_{m_type}")
-                        with wb_col2:
-                            u_base_one_w = st.checkbox("1개", key=f"wb1_{d_str}_{m_type}")
+    week_meals = fetch_meals(curr_week_start.isoformat(), (curr_week_start + timedelta(days=6)).isoformat())
+    for i in range(7):
+        current_dt = curr_week_start + timedelta(days=i)
+        d_str = current_dt.isoformat()
+        st.write(f"**{current_dt.strftime('%m/%d (%a)')}**")
+        m_cols = st.columns(3)
+        for idx, m_type in enumerate(["아침", "점심", "저녁"]):
+            with m_cols[idx]:
+                m_row = week_meals[(week_meals['date'] == d_str) & (week_meals['meal'] == m_type)]
+                if not m_row.empty:
+                    tr = m_row.iloc[0]
+                    w_base_raw, w_tops, w_snack, w_new, w_amt, w_eaten = tr['base'] or "미등록", tr['toppings'] or [], tr['snack'] or [], tr['new_food'] or [], int(tr['amount'] or 0), bool(tr['is_eaten'])
+                else:
+                    w_base_raw, w_tops, w_snack, w_new, w_amt, w_eaten = "미등록", [], [], [], 0, False
+                bg = "#e8f5e9" if w_eaten else "#fff3e0"
+                base_disp, t_txt, s_txt = clean_list_str(w_base_raw), clean_list_str(w_tops), clean_list_str(w_snack)
+                n_txt = clean_list_str(w_new, is_new_food=True)
+                st.markdown(f'<div style="background-color:{bg}; padding:8px; border-radius:8px; border:1px solid #ddd; min-height:100px; font-size:12px;"><b>{m_type}</b><br>🍚 {base_disp}<br><span style="color:#666;">🥗 {t_txt if t_txt else "-"}</span><br><span style="color:#d4a017;">🍪 {s_txt if s_txt else ""}</span><br><span style="color:red; font-weight:bold; font-size:10px;">{f"🆕 {n_txt}" if n_txt else ""}</span></div>', unsafe_allow_html=True)
+                with st.popover("📝", use_container_width=True):
+                    cw1, cw2 = st.columns(2)
+                    if cw1.button("📋", key=f"wcp_{d_str}_{m_type}"):
+                        st.session_state.clipboard = {"base": w_base_raw, "toppings": w_tops, "snack": w_snack, "new_food": w_new, "amount": w_amt}
+                        st.toast("복사 완료")
+                    if cw2.button("📥", key=f"wps_{d_str}_{m_type}"):
+                        if st.session_state.clipboard:
+                            cb = st.session_state.clipboard
+                            save_meal(d_str, m_type, cb['base'], cb['toppings'], cb['snack'], cb['new_food'], cb['amount'], False)
+                    w_bases = [b.strip() for b in w_base_raw.split(',') if b.strip()]
+                    wb_col1, wb_col2 = st.columns([3, 1])
+                    with wb_col1:
+                        u_wb1 = st.selectbox("베이스 1", food_options["베이스"], index=food_options["베이스"].index(w_bases[0]) if w_bases and w_bases[0] in food_options["베이스"] else 0, key=f"wb1_{d_str}_{m_type}")
+                    with wb_col2:
+                        u_wb_chk = st.checkbox("1개", value=len(w_bases)>1, key=f"wbchk_{d_str}_{m_type}")
+                    u_wb_final = [u_wb1]
+                    if u_wb_chk:
+                        u_wb2 = st.selectbox("베이스 2", food_options["베이스"], index=food_options["베이스"].index(w_bases[1]) if len(w_bases)>1 and w_bases[1] in food_options["베이스"] else 0, key=f"wb2_{d_str}_{m_type}")
+                        u_wb_final.append(u_wb2)
+                    u_wt = st.multiselect("토핑", food_options["토핑"], default=[t for t in (w_tops if isinstance(w_tops, list) else []) if t in food_options["토핑"]], key=f"wt_{d_str}_{m_type}")
+                    u_ws = st.multiselect("간식", food_options["간식"], default=[s for s in (w_snack if isinstance(w_snack, list) else []) if s in food_options["간식"]], key=f"ws_{d_str}_{m_type}")
+                    u_wa = st.number_input("양", min_value=0, value=w_amt, key=f"wa_{d_str}_{m_type}")
+                    u_we = st.checkbox("완료", value=w_eaten, key=f"we_{d_str}_{m_type}")
+                    if st.button("저장", key=f"wbtn_{d_str}_{m_type}", type="primary", use_container_width=True):
+                        save_meal(d_str, m_type, u_wb_final, u_wt, u_ws, w_new, u_wa, u_we)
 
-                        u_tops = st.multiselect("토핑", food_options["토핑"], default=[t for t in (w_tops if isinstance(w_tops, list) else []) if t in food_options["토핑"]], key=f"wt_{d_str}_{m_type}")
-                        u_snack = st.multiselect("간식", food_options["간식"], default=[s for s in (w_snack if isinstance(w_snack, list) else []) if s in food_options["간식"]], key=f"ws_{d_str}_{m_type}")
-                        
-                        s_new_w = [n.split(':')[0] for n in (w_new if isinstance(w_new, list) else [])]
-                        u_new_base_w = st.multiselect("🆕 처음 재료 선택", food_options["전체"], default=[n for n in s_new_w if n in food_options["전체"]], key=f"wn_b_{d_str}_{m_type}")
-                        u_new_final_w = []
-                        if u_new_base_w:
-                            for fn in u_new_base_w:
-                                ex_day = 0
-                                for n in (w_new if isinstance(w_new, list) else []):
-                                    if n.split(':')[0] == fn and ":" in n: ex_day = int(n.split(':')[1])
-                                default_day_w = ex_day if ex_day > 0 else get_next_day_for_food(fn, d_str)
-                                u_day_w = st.number_input(f"{fn} 일차", min_value=1, value=default_day_w, key=f"wd_{d_str}_{m_type}_{fn}")
-                                u_new_final_w.append(f"{fn}:{u_day_w}")
+# --- [공통: 재료 관리] ---
+st.divider()
+st.header("📦 재료 관리 & 소진 예측")
 
-                        u_amt = st.number_input("양", min_value=0, value=w_amt, key=f"wa_{d_str}_{m_type}")
-                        u_eaten = st.checkbox("완료", value=w_eaten, key=f"we_{d_str}_{m_type}")
-                        if st.button("저장", key=f"wbtn_{d_str}_{idx}", type="primary", use_container_width=True):
-                            save_meal(d_str, m_type, u_base, u_tops, u_snack, u_new_final_w, u_amt, u_eaten, base_use_one=u_base_one_w)
+with st.expander("➕ 새 재료 추가하기", expanded=False):
+    new_f_col1, new_f_col2, new_f_col3 = st.columns([2, 2, 1])
+    with new_f_col1: n_name = st.text_input("재료 이름 (예: 연어)")
+    with new_f_col2: n_cat = st.selectbox("카테고리", ["베이스", "토핑", "간식"])
+    with new_f_col3:
+        st.write("") 
+        if st.button("추가", type="primary", use_container_width=True):
+            if n_name:
+                supabase.table("inventory").insert({"food": n_name, "category": n_cat, "quantity": 0}).execute()
+                st.rerun()
 
-    st.divider()
-    st.header("📦 재료 관리 & 소진 예측")
-    
-    with st.expander("➕ 새 재료 추가하기", expanded=False):
-        new_f_col1, new_f_col2, new_f_col3 = st.columns([2, 2, 1])
-        with new_f_col1: n_name = st.text_input("재료 이름 (예: 연어)")
-        with new_f_col2: n_cat = st.selectbox("카테고리", ["베이스", "토핑", "간식"])
-        with new_f_col3:
-            st.write("") 
-            if st.button("추가", type="primary", use_container_width=True):
-                if n_name:
-                    supabase.table("inventory").insert({"food": n_name, "category": n_cat, "quantity": 0}).execute()
-                    st.rerun()
+st.subheader("⚠️ 재고 주의 현황")
+low_stock, imminent_stock = {"베이스": [], "토핑": [], "간식": []}, {"베이스": [], "토핑": [], "간식": []}
+today_dt = date.today()
+seven_days_later = today_dt + timedelta(days=7)
 
-    # [업데이트] 재고 부족 주의 및 재고 소진 임박 표시
-    st.subheader("⚠️ 재고부족주의")
-    low_stock = {"베이스": [], "토핑": [], "간식": []}
-    imminent_stock = {"베이스": [], "토핑": [], "간식": []}
-    
-    today = date.today()
-    seven_days_later = today + timedelta(days=7)
+for _, row in inv_df.iterrows():
+    f_name, f_qty, f_cat = row['food'], int(row['quantity']), row['category']
+    if f_qty <= 5: low_stock[f_cat].append(f"{f_name}({f_qty}개)")
+    d_val = depletion_map.get(f_name)
+    if d_val and d_val not in ["여유", "재고 없음", "미정"]:
+        try:
+            d_date = date.fromisoformat(d_val)
+            if today_dt <= d_date <= seven_days_later:
+                imminent_stock[f_cat].append(f"{f_name}({d_date.strftime('%m/%d')}, {f_qty}개 남음)")
+        except: pass
 
-    for _, row in inv_df.iterrows():
-        f_name, f_qty, f_cat = row['food'], int(row['quantity']), row['category']
-        # 1. 재고 5개 이하
-        if f_qty <= 5: 
-            low_stock[f_cat].append(f"{f_name}({f_qty}개 남음)")
-        
-        # 2. 소진 임박 (7일 이내)
-        d_val = depletion_map.get(f_name)
-        if d_val and d_val not in ["여유", "재고 없음", "미정"]:
-            try:
-                d_date = date.fromisoformat(d_val)
-                if today <= d_date <= seven_days_later:
-                    imminent_stock[f_cat].append(f"{f_name} ({d_date.strftime('%m/%d')} 소진예상, {f_qty}개 남음)")
-            except: pass
-    
-    # UI 출력: 재고부족
-    if any(low_stock.values()):
-        st.markdown('<div style="background-color:#fff5f5; padding:12px; border-radius:10px; border:1px solid #ffcfcf; margin-bottom:10px;">', unsafe_allow_html=True)
-        st.markdown("<b style='color:#e53935;'>[재고부족주의]</b>", unsafe_allow_html=True)
-        for cat, items in low_stock.items():
-            if items: st.markdown(f"**• {cat}** : {', '.join(items)}")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    # UI 출력: 소진임박 (새로 추가)
-    if any(imminent_stock.values()):
-        st.markdown('<div style="background-color:#fff9db; padding:12px; border-radius:10px; border:1px solid #fab005; margin-bottom:10px;">', unsafe_allow_html=True)
-        st.markdown("<b style='color:#f08c00;'>[재고소진임박 - 7일 이내]</b>", unsafe_allow_html=True)
-        for cat, items in imminent_stock.items():
-            if items:
-                for item in items:
-                    st.markdown(f"**• {cat}** : {item}")
-        st.markdown('</div>', unsafe_allow_html=True)
+if any(low_stock.values()) or any(imminent_stock.values()):
+    c1, c2 = st.columns(2)
+    with c1:
+        if any(low_stock.values()):
+            st.error("🚨 **재고 부족 (5개 이하)**")
+            for cat, items in low_stock.items():
+                if items: st.write(f"**{cat}**: {', '.join(items)}")
+    with c2:
+        if any(imminent_stock.values()):
+            st.warning("⏰ **소진 임박 (7일 내)**")
+            for cat, items in imminent_stock.items():
+                if items: st.write(f"**{cat}**: {', '.join(items)}")
+else: st.success("재고가 충분합니다. 😊")
 
-    if not any(low_stock.values()) and not any(imminent_stock.values()):
-        st.success("재고가 충분하고 소진 임박한 재료가 없습니다. 😊")
+inv_tabs = st.tabs(["🍚 베이스", "🥗 토핑", "🍪 간식"])
+for idx, cat in enumerate(["베이스", "토핑", "간식"]):
+    with inv_tabs[idx]:
+        cat_items = inv_df[inv_df['category'] == cat]
+        for _, row in cat_items.iterrows():
+            f_name, f_id, f_qty = row['food'], row['id'], int(row['quantity'])
+            d_date = depletion_map.get(f_name, "미정")
+            col1, col2, col3 = st.columns([3, 2, 1])
+            with col1:
+                st.markdown(f"**{f_name}** \n<small style='color:#666;'>소진예정: {d_date}</small>", unsafe_allow_html=True)
+            with col2:
+                # [수정 핵심] 사용자가 입력한 값(세션)이 DB값보다 우선하도록 설정하여 튕김 방지
+                state_key = f"q_{f_id}"
+                if state_key not in st.session_state:
+                    st.session_state[state_key] = f_qty
+                
+                # 사용자가 입력을 마치면(on_change) 콜백 함수를 통해 DB에 먼저 저장
+                st.number_input(
+                    "수량", 
+                    min_value=0, 
+                    key=state_key, 
+                    on_change=on_quantity_change, 
+                    args=(f_id, state_key), 
+                    label_visibility="collapsed"
+                )
+            with col3:
+                with st.popover("⚙️"):
+                    new_name = st.text_input("이름 수정", value=f_name, key=f"edit_{f_id}")
+                    if st.button("저장", key=f"save_n_{f_id}"):
+                        supabase.table("inventory").update({"food": new_name}).eq("id", f_id).execute()
+                        st.rerun()
+                    if st.button("🗑️ 삭제", key=f"del_{f_id}"):
+                        supabase.table("inventory").delete().eq("id", f_id).execute()
+                        if state_key in st.session_state:
+                            del st.session_state[state_key]
+                        st.rerun()
+            st.divider()
 
-    inv_tabs = st.tabs(["🍚 베이스", "🥗 토핑", "🍪 간식"])
-    for idx, cat in enumerate(["베이스", "토핑", "간식"]):
-        with inv_tabs[idx]:
-            cat_items = inv_df[inv_df['category'] == cat]
-            for _, row in cat_items.iterrows():
-                f_name, f_id, f_qty = row['food'], row['id'], int(row['quantity'])
-                d_date = depletion_map.get(f_name, "미정")
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    with col1:
-                        st.markdown(f"**{f_name}**")
-                        st.markdown(f"<small style='color:#666;'>예상 소진일: {d_date}</small>", unsafe_allow_html=True)
-                    with col2:
-                        new_q = st.number_input("수량", min_value=0, value=f_qty, key=f"q_{f_id}", label_visibility="collapsed")
-                        if new_q != f_qty:
-                            supabase.table("inventory").update({"quantity": int(new_q)}).eq("id", f_id).execute()
-                            st.rerun()
-                    with col3:
-                        with st.popover("⚙️"):
-                            new_name = st.text_input("이름 수정", value=f_name, key=f"edit_{f_id}")
-                            if st.button("저장", key=f"save_n_{f_id}"):
-                                supabase.table("inventory").update({"food": new_name}).eq("id", f_id).execute()
-                                st.rerun()
-                            if st.button("🗑️ 삭제", key=f"del_{f_id}", type="secondary"):
-                                supabase.table("inventory").delete().eq("id", f_id).execute()
-                                st.rerun()
-                    st.divider()
-
-# ======================
-# 4. 월간 식단표
-# ======================
+# --- [TAB: 월간 식단표] ---
 with main_tab2:
     st.header("🗓️ 월간 상세 식단표")
     sel_y = st.selectbox("년", [2025, 2026], index=1)
     sel_m = st.selectbox("월", range(1, 13), index=datetime.now().month-1)
     m_data = fetch_meals(date(sel_y, sel_m, 1).isoformat(), date(sel_y, sel_m, calendar.monthrange(sel_y, sel_m)[1]).isoformat())
     cal, m_order = calendar.monthcalendar(sel_y, sel_m), {"아침": 0, "점심": 1, "저녁": 2}
-    
     days_kr = ["월", "화", "수", "목", "금", "토", "일"]
-    
     for week in cal:
         w_cols = st.columns(7)
         for i, day in enumerate(week):
             if day != 0:
                 dt_obj = date(sel_y, sel_m, day)
-                d_str = dt_obj.isoformat()
-                wd = dt_obj.weekday()
-                
-                formatted_day = f"{sel_m}/{day}({days_kr[wd]})"
-                
-                if i == 5: day_color = "blue"
-                elif i == 6: day_color = "red"
-                else: day_color = "black"
-                
+                d_str, wd = dt_obj.isoformat(), dt_obj.weekday()
+                day_color = "blue" if i == 5 else ("red" if i == 6 else "black")
                 d_meals = m_data[m_data['date'] == d_str].copy()
                 bg = "#ffffff" if d_meals.empty else ("#e8f5e9" if d_meals['is_eaten'].all() else "#fff9c4")
-                
                 with w_cols[i]:
                     inner = ""
                     if not d_meals.empty:
                         d_meals['order'] = d_meals['meal'].map(m_order)
                         for _, row in d_meals.sort_values('order').iterrows():
                             icon = "🌅" if row['meal'] == "아침" else "☀️" if row['meal'] == "점심" else "🌙"
-                            t_txt, s_txt = clean_list_str(row['toppings']), clean_list_str(row['snack'])
+                            b_disp, t_txt, s_txt = clean_list_str(row['base']), clean_list_str(row['toppings']), clean_list_str(row['snack'])
                             n_txt = clean_list_str(row['new_food'], is_new_food=True)
-                            inner += f"<div style='margin-bottom:3px; font-size:9px;'>{icon}<b>{row['base']}</b>"
+                            inner += f"<div style='margin-bottom:3px; font-size:9px;'>{icon}<b>{b_disp}</b>"
                             if t_txt: inner += f"<br><span style='color:#666;'>└ {t_txt}</span>"
-                            if s_txt: inner += f"<br><span style='color:#d4a017;'>🍪 {s_txt}</span>"
                             if n_txt: inner += f"<br><span style='color:red;'>🆕 {n_txt}</span>"
                             inner += "</div>"
-                    
-                    st.markdown(f"""
-                        <div style='background-color:{bg}; border:1px solid #ddd; border-radius:5px; padding:3px; min-height:100px;'>
-                            <div style='text-align:center; font-weight:bold; font-size:10px; color:{day_color};'>
-                                {formatted_day}
-                            </div>
-                            {inner}
-                        </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f"<div style='background-color:{bg}; border:1px solid #ddd; border-radius:5px; padding:3px; min-height:100px;'><div style='text-align:center; font-weight:bold; font-size:10px; color:{day_color};'>{sel_m}/{day}({days_kr[wd]})</div>{inner}</div>", unsafe_allow_html=True)
