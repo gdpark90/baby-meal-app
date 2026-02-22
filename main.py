@@ -23,7 +23,6 @@ if "clipboard" not in st.session_state:
 # 2. 데이터 처리 및 헬퍼 함수
 # ======================
 
-# [추가된 콜백 함수] 사용자가 수량을 직접 변경했을 때 DB에 즉시 반영
 def on_quantity_change(f_id, state_key):
     new_val = st.session_state[state_key]
     supabase.table("inventory").update({"quantity": int(new_val)}).eq("id", f_id).execute()
@@ -55,15 +54,27 @@ def get_next_day_for_food(food_name, target_date_str):
     return count + 1
 
 def calculate_depletion(inv_df):
-    today_str = date.today().isoformat()
-    future_end = (date.today() + timedelta(days=60)).isoformat()
-    future_meals = fetch_meals(today_str, future_end)
+    today_obj = date.today()
+    today_str = today_obj.isoformat()
+    future_end = (today_obj + timedelta(days=60)).isoformat()
+    # 전체 식단을 가져오되, 예측을 위해 오늘 이후 데이터만 사용
+    raw_meals = fetch_meals(today_str, future_end)
+    
+    # [로직 수정 1] 이미 완료(Check)된 식단은 재고 차감이 끝난 것이므로 예측 계산에서 제외
+    future_meals = raw_meals[raw_meals['is_eaten'] == False].copy()
     
     depletion_results = {}
+    m_order = {"아침": 0, "점심": 1, "저녁": 2}
+    
+    if not future_meals.empty:
+        future_meals['meal_rank'] = future_meals['meal'].map(m_order)
+        future_meals = future_meals.sort_values(by=['date', 'meal_rank'])
+
     for _, item in inv_df.iterrows():
         food_name = item['food']
         current_qty = int(item['quantity'])
         usage_dates = []
+        
         if not future_meals.empty:
             for _, meal in future_meals.iterrows():
                 m_base_raw = meal['base'] if meal['base'] else ""
@@ -71,6 +82,7 @@ def calculate_depletion(inv_df):
                 m_tops = meal['toppings'] if isinstance(meal['toppings'], list) else []
                 m_snack = meal['snack'] if isinstance(meal['snack'], list) else []
                 
+                # 베이스 사용량 계산 (1개면 2개 소진, 2개 섞으면 각각 1개 소진)
                 if food_name in m_bases:
                     if len(m_bases) > 1:
                         usage_dates.append(meal['date'])
@@ -81,13 +93,17 @@ def calculate_depletion(inv_df):
                 if food_name in m_tops or food_name in m_snack:
                     usage_dates.append(meal['date'])
         
-        usage_dates.sort()
+        # [로직 수정 2] 재고가 0개인데 오늘/내일 계획이 있다면 첫 계획 날짜를 반환
         if current_qty <= 0:
-            depletion_results[food_name] = "재고 없음"
+            if usage_dates:
+                depletion_results[food_name] = usage_dates[0]
+            else:
+                depletion_results[food_name] = "재고 없음"
         elif len(usage_dates) >= current_qty:
             depletion_results[food_name] = usage_dates[current_qty - 1]
         else:
             depletion_results[food_name] = "여유"
+            
     return depletion_results
 
 def update_inventory_stock(base_str, toppings, snack, change_direction):
@@ -341,11 +357,18 @@ seven_days_later = today_dt + timedelta(days=7)
 
 for _, row in inv_df.iterrows():
     f_name, f_qty, f_cat = row['food'], int(row['quantity']), row['category']
+    
+    # 5개 이하 무조건 표시
     if f_qty <= 5: low_stock[f_cat].append(f"{f_name}({f_qty}개)")
+    
     d_val = depletion_map.get(f_name)
-    if d_val and d_val not in ["여유", "재고 없음", "미정"]:
+    # [로직 수정 3] "재고 없음"인 경우도 날짜가 잡혀있다면(오늘 먹을 계획) 노란색 경고창에 표시
+    if d_val and d_val not in ["여유", "미정"]:
+        if d_val == "재고 없음": continue # 계획조차 없는 완전 0개는 패스
+        
         try:
             d_date = date.fromisoformat(d_val)
+            # 오늘 포함 7일 이내 소진 예정인 것들 표시
             if today_dt <= d_date <= seven_days_later:
                 imminent_stock[f_cat].append(f"{f_name}({d_date.strftime('%m/%d')}, {f_qty}개 남음)")
         except: pass
@@ -359,7 +382,7 @@ if any(low_stock.values()) or any(imminent_stock.values()):
                 if items: st.write(f"**{cat}**: {', '.join(items)}")
     with c2:
         if any(imminent_stock.values()):
-            st.warning("⏰ **소진 임박 (7일 내)**")
+            st.warning("⏰ **소진 임박 (오늘/7일 내)**")
             for cat, items in imminent_stock.items():
                 if items: st.write(f"**{cat}**: {', '.join(items)}")
 else: st.success("재고가 충분합니다. 😊")
@@ -375,12 +398,10 @@ for idx, cat in enumerate(["베이스", "토핑", "간식"]):
             with col1:
                 st.markdown(f"**{f_name}** \n<small style='color:#666;'>소진예정: {d_date}</small>", unsafe_allow_html=True)
             with col2:
-                # [수정 핵심] 사용자가 입력한 값(세션)이 DB값보다 우선하도록 설정하여 튕김 방지
                 state_key = f"q_{f_id}"
                 if state_key not in st.session_state:
                     st.session_state[state_key] = f_qty
                 
-                # 사용자가 입력을 마치면(on_change) 콜백 함수를 통해 DB에 먼저 저장
                 st.number_input(
                     "수량", 
                     min_value=0, 
